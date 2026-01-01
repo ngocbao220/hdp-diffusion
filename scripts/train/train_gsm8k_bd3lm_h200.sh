@@ -24,9 +24,9 @@ BLOCK_SIZE=16  # Standard block size for BD3-LM (can try 4, 8, 16)
 SEQ_LENGTH=512 # Context length for GSM8K problems
 
 # 2xH200 Optimized Settings (141GB VRAM each)
-BATCH_SIZE=128           # Per GPU: 128 x 2 = 256 per step
-EVAL_BATCH_SIZE=64       # Larger eval batch
-GLOBAL_BATCH_SIZE=512    # Same global batch
+BATCH_SIZE=64           # Per GPU: 128 x 2 = 256 per step
+EVAL_BATCH_SIZE=32      # Larger eval batch
+GLOBAL_BATCH_SIZE=256   # Same global batch
 GRAD_ACCUM=2             # Reduced from 4 (256 x 2 = 512)
 
 MAX_STEPS=50000
@@ -90,7 +90,7 @@ python -u main.py \
     +trainer.strategy=ddp \
     trainer.precision=bf16-mixed \
     trainer.gradient_clip_val=1.0 \
-    wandb.name=bd3lm-gsm8k-h200-bs${BLOCK_SIZE} \
+    wandb.name=bd3lm-gsm8k-h200-bs${BLOCK_SIZE}-$(date +%Y%m%d) \
     wandb.project=gsm8k-bd3lm-h200 \
     wandb.tags=[gsm8k,baseline,bd3lm,h200,bs${BLOCK_SIZE}] \
     +experiment_name=gsm8k_bd3lm_h200_bs${BLOCK_SIZE} \
