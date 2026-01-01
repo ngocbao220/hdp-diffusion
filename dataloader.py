@@ -685,7 +685,6 @@ def get_dataloaders(config, tokenizer, skip_train=False,
   else:
     # Check if using HDP-Diffusion dataset
     if config.data.valid == 'hdp_diffusion':
-      from hdp_dataset import HDPDataset
       valid_set = HDPDataset(
         data_path=config.data.test_path,
         tokenizer=tokenizer,
