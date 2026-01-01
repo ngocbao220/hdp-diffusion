@@ -12,6 +12,14 @@ import dataloader
 import diffusion
 import utils
 
+# Enable Tensor Cores optimization for H200/A100 GPUs
+# Trade-off precision for performance on Ampere+ architectures
+torch.set_float32_matmul_precision('high')  # Options: 'highest', 'high', 'medium'
+
+# Use new TF32 API (Pytorch 2.0+)
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
 omegaconf.OmegaConf.register_new_resolver(
   'cwd', os.getcwd)
 omegaconf.OmegaConf.register_new_resolver(

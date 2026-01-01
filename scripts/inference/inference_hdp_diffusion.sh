@@ -8,7 +8,7 @@ echo "HDP-Diffusion Inference Test"
 echo "=========================================="
 
 # Find the latest HDP checkpoint
-CHECKPOINT_DIR="/workspace/hdp-diffusion/outputs/gsm8k/2026.01.01/095417/outputs/hdp_diffusion_test"
+CHECKPOINT_DIR="/workspace/hdp-diffusion/outputs/hdp_diffusion/2026.01.01/164614/outputs/hdp_diffusion_h200_bs16/"
 CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoints/last.ckpt"
 
 if [ ! -f "$CHECKPOINT_PATH" ]; then
@@ -21,10 +21,6 @@ fi
 echo "Using checkpoint: $CHECKPOINT_PATH"
 echo "Block structure: Q(128) + P(128) + E(256) = 512"
 echo "=========================================="
-
-# Activate environment
-source $(conda info --base)/etc/profile.d/conda.sh
-conda activate bd3lm310
 
 # Run inference with HDP structure
 python -u main.py \

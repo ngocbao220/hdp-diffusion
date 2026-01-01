@@ -57,9 +57,7 @@ echo "  Strategy: DDP (Distributed Data Parallel)"
 echo "  Output: ${OUTPUT_DIR}"
 echo "=========================================="
 
-# Activate environment
-source $(conda info --base)/etc/profile.d/conda.sh
-conda activate bd3lm310
+
 
 # Run training with H200 optimizations
 python -u main.py \
@@ -70,7 +68,6 @@ python -u main.py \
     loader.num_workers=16 \
     model=small \
     algo=bd3lm \
-    algo.clip_search_widths=[0.5,0.6,0.7,0.8,0.9] \
     data=gsm8k_baseline \
     model.length=${SEQ_LENGTH} \
     model.attn_backend=sdpa \
@@ -90,7 +87,7 @@ python -u main.py \
     +trainer.strategy=ddp \
     trainer.precision=bf16-mixed \
     trainer.gradient_clip_val=1.0 \
-    wandb.name=bd3lm-gsm8k-h200-bs${BLOCK_SIZE}-$(date +%Y%m%d) \
+    wandb.name=bd3lm-gsm8k-h200-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S) \
     wandb.project=gsm8k-bd3lm-h200 \
     wandb.tags=[gsm8k,baseline,bd3lm,h200,bs${BLOCK_SIZE}] \
     +experiment_name=gsm8k_bd3lm_h200_bs${BLOCK_SIZE} \

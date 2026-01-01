@@ -101,7 +101,7 @@ python -u main.py \
     +trainer.strategy=ddp \
     trainer.precision=bf16-mixed \
     trainer.gradient_clip_val=1.0 \
-    wandb.name=hdp-diffusion-h200-bs${BLOCK_SIZE}-$(date +%Y%m%d) \
+    wandb.name=hdp-diffusion-h200-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S) \
     wandb.project=hdp-diffusion-h200 \
     wandb.tags=[hdp,gsm8k,hierarchical,h200,bs${BLOCK_SIZE}] \
     +experiment_name=hdp_diffusion_h200_bs${BLOCK_SIZE} \
