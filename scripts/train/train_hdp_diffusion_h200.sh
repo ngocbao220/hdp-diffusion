@@ -9,7 +9,7 @@
 #SBATCH --partition=gpu               # Request partition
 #SBATCH --constraint="h200"           # H200 GPU
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:1                  # Single H200 GPU
+#SBATCH --gres=gpu:2                  # 2x H200 GPUs
 #SBATCH --open-mode=append            # Do not overwrite logs
 #SBATCH --requeue                     # Requeue upon preemption
 
@@ -31,7 +31,7 @@ BLOCK_SIZE=16  # Can try 4, 8, 16
 BATCH_SIZE=64         # Large batch for H200
 EVAL_BATCH_SIZE=32
 GLOBAL_BATCH_SIZE=256    # 4x original
-GRAD_ACCUM=4             # To reach global batch size
+GRAD_ACCUM=2             # 64 * 2 GPUs * 2 = 256
 
 # Training hyperparameters
 MAX_STEPS=50000
@@ -68,18 +68,18 @@ echo "=========================================="
 
 # Activate conda environment
 source $(conda info --base)/etc/profile.d/conda.sh
-conda activate bd3lm310
+conda activate hdp
 
 # Run HDP-Diffusion training with H200 optimizations
 python -u main.py \
     mode=train \
     model=small \
+    data=hdp_diffusion \
     model.length=${SEQ_LEN} \
     model.attn_backend=sdpa \
     algo=bd3lm \
     algo.backbone=dit \
     block_size=${BLOCK_SIZE} \
-    data=hdp_diffusion \
     noise=loglinear \
     loader.global_batch_size=${GLOBAL_BATCH_SIZE} \
     loader.eval_global_batch_size=256 \
@@ -98,18 +98,13 @@ python -u main.py \
     trainer.log_every_n_steps=${LOG_INTERVAL} \
     trainer.devices=2 \
     trainer.num_nodes=1 \
-    trainer.strategy=ddp \
+    +trainer.strategy=ddp \
     trainer.precision=bf16-mixed \
     trainer.gradient_clip_val=1.0 \
     wandb.name=hdp-diffusion-h200-bs${BLOCK_SIZE} \
     wandb.project=hdp-diffusion-h200 \
     wandb.tags=[hdp,gsm8k,hierarchical,h200,bs${BLOCK_SIZE}] \
     +experiment_name=hdp_diffusion_h200_bs${BLOCK_SIZE} \
-    +hdp.enabled=true \
-    +hdp.question_len=${QUESTION_LEN} \
-    +hdp.plan_len=${PLAN_LEN} \
-    +hdp.exec_len=${EXEC_LEN} \
-    +hdp.use_hdp_attention=true \
     checkpointing.save_dir=${OUTPUT_DIR}
 
 EXIT_CODE=$?

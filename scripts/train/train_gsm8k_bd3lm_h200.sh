@@ -87,7 +87,7 @@ python -u main.py \
     trainer.log_every_n_steps=${LOG_INTERVAL} \
     trainer.devices=2 \
     trainer.num_nodes=1 \
-    trainer.strategy=ddp \
+    +trainer.strategy=ddp \
     trainer.precision=bf16-mixed \
     trainer.gradient_clip_val=1.0 \
     wandb.name=bd3lm-gsm8k-h200-bs${BLOCK_SIZE} \

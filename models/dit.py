@@ -717,6 +717,10 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         attn_backend=attn_backend
       )
       self.hierarchical_config = hierarchical_config
+    elif attn_backend == 'flash_attn':
+      # Flash attention doesn't use explicit mask (uses is_causal flag)
+      # Block diffusion mask not needed for flash_attn
+      pass
     elif attn_backend == 'flex' and FLEX_ATTN_AVAILABLE:
       self.block_diff_mask = create_block_mask(
         partial(block_diff_mask, block_size=block_size, n=seqlen),
@@ -726,7 +730,7 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         b=None, h=None, q_idx=torch.arange(seqlen*2)[:, None], 
         kv_idx=torch.arange(seqlen*2)[None, :], block_size=block_size, n=seqlen)
     else:
-      raise ValueError('Unknown attention backend')
+      raise ValueError(f'Unknown attention backend: {attn_backend}')
     
   def reset_kv_cache(self):
     for block in self.blocks:
@@ -738,38 +742,47 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         dtype=torch.bfloat16)
       block.cache_idx = 0
 
-  def forward(self, indices, sigma, sample_mode=False, store_kv=False):
+  def forward(self, indices, sigma, sample_mode=False, store_kv=False, hdp_mask=None):
     x = self.vocab_embed(indices)
     if sigma is None:
       t_cond = None
     else:
       t_cond = F.silu(self.sigma_map(sigma))
 
-    cross_attn = hasattr(self, 'block_diff_mask')
-    if cross_attn:
-      mask = self.block_diff_mask
-      # special cases for sampling
-      if sample_mode:
-        if self.config.sampling.kv_cache:
-          # full cross-attention to kv cache
-          mask = None
-          accum_length = self.blocks[0].cache_idx + self.block_size
-          # positional encodings for cache
-          x_full = torch.zeros((
-            x.shape[0], accum_length, x.shape[2]), device=x.device)
-          rotary_cos_sin = self.rotary_emb(x_full)
+    # Use HDP mask if provided, otherwise use block_diff_mask for BD3-LM
+    if hdp_mask is not None:
+      cross_attn = True
+      mask = hdp_mask
+      # For HDP with BD3-LM backbone, rotary needs to match half sequence
+      # because DDiTBlock splits x into (x[:,:n], x[:,n:])
+      self.n = x.shape[1] // 2
+      rotary_cos_sin = self.rotary_emb(x[:, :self.n])
+    else:
+      cross_attn = hasattr(self, 'block_diff_mask')
+      if cross_attn:
+        mask = self.block_diff_mask
+        # special cases for sampling
+        if sample_mode:
+          if self.config.sampling.kv_cache:
+            # full cross-attention to kv cache
+            mask = None
+            accum_length = self.blocks[0].cache_idx + self.block_size
+            # positional encodings for cache
+            x_full = torch.zeros((
+              x.shape[0], accum_length, x.shape[2]), device=x.device)
+            rotary_cos_sin = self.rotary_emb(x_full)
+          else:
+            # index block-causal mask only during sampling
+            mask = mask[
+              self.n:self.n+x.shape[1], self.n:self.n+x.shape[1]]
+            rotary_cos_sin = self.rotary_emb(x)
+
         else:
-          # index block-causal mask only during sampling
-          mask = mask[
-            self.n:self.n+x.shape[1], self.n:self.n+x.shape[1]]
-          rotary_cos_sin = self.rotary_emb(x)
+          rotary_cos_sin = self.rotary_emb(x[:, :self.n])
 
       else:
-        rotary_cos_sin = self.rotary_emb(x[:, :self.n])
-
-    else:
-      rotary_cos_sin = self.rotary_emb(x)
-      mask = None
+        rotary_cos_sin = self.rotary_emb(x)
+        mask = None
 
     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
       for i in range(len(self.blocks)):

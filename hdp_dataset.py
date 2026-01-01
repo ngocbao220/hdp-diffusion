@@ -33,21 +33,24 @@ class HDPDataset(Dataset):
         tokenizer: PreTrainedTokenizer,
         block_sizes: Tuple[int, int, int] = (128, 128, 256),
         add_special_tokens: bool = True,
-        return_block_indices: bool = True
+        return_block_indices: bool = True,
+        use_special_format: bool = True
     ):
         """
         Args:
-            data_path: Path to JSON file with {"question", "plan", "execution"}
+            data_path: Path to JSON file with {"question", "plan", "execution", "answer"}
             tokenizer: Hugging Face tokenizer
             block_sizes: (question_len, plan_len, exec_len) in tokens
             add_special_tokens: Whether to add BOS/EOS tokens
             return_block_indices: Whether to return block_indices tensor
+            use_special_format: Whether to use [PLAN] [EXECUTION] [ANSWER] format
         """
         self.data_path = data_path
         self.tokenizer = tokenizer
         self.block_sizes = block_sizes
         self.add_special_tokens = add_special_tokens
         self.return_block_indices = return_block_indices
+        self.use_special_format = use_special_format
         
         self.q_len, self.p_len, self.e_len = block_sizes
         self.seq_len = sum(block_sizes)
@@ -68,6 +71,9 @@ class HDPDataset(Dataset):
             for key in required_keys:
                 if key not in sample:
                     raise ValueError(f"Sample {i} missing key '{key}'")
+            # answer key is optional but recommended
+            if 'answer' not in sample:
+                logger.warning(f"Sample {i} missing optional 'answer' key")
         
         return data
     
@@ -136,6 +142,19 @@ class HDPDataset(Dataset):
         """
         sample = self.data[idx]
         
+        # Build text based on format
+        if self.use_special_format:
+            # Format: [PLAN] plan_text [EXECUTION] execution_text [ANSWER] answer
+            plan_text = f"[PLAN] {sample['plan']}"
+            execution_text = f"[EXECUTION] {sample['execution']}"
+            answer = sample.get('answer', '')
+            if answer:
+                execution_text = f"{execution_text} [ANSWER] {answer}"
+        else:
+            # Original format
+            plan_text = sample['plan']
+            execution_text = sample['execution']
+        
         # Tokenize each block separately
         question_ids = self._tokenize_and_pad(
             sample['question'], 
@@ -144,13 +163,13 @@ class HDPDataset(Dataset):
         )
         
         plan_ids = self._tokenize_and_pad(
-            sample['plan'], 
+            plan_text, 
             self.p_len,
             padding_side='right'
         )
         
         execution_ids = self._tokenize_and_pad(
-            sample['execution'], 
+            execution_text, 
             self.e_len,
             padding_side='right'
         )

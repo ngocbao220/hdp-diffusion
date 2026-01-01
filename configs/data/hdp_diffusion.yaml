@@ -2,12 +2,12 @@
 # Hierarchical Dual-Process Diffusion with 3-block structure
 
 name: hdp_diffusion
-train: gsm8k
-valid: gsm8k
+train: hdp_diffusion
+valid: hdp_diffusion
 
 # Data paths (use hierarchical JSON format)
-train_path: data/gsm8k/gsm8k_hierarchical_train.json
-test_path: data/gsm8k/gsm8k_hierarchical_test.json
+train_path: /workspace/hdp-diffusion/data/gsm8k/gsm8k_hierarchical_train.json
+test_path: /workspace/hdp-diffusion/data/gsm8k/gsm8k_hierarchical_test.json
 
 # Tokenizer
 tokenizer_name_or_path: gpt2
@@ -23,6 +23,9 @@ hdp:
   question_len: 128   # Context block
   plan_len: 128       # Abstract reasoning block
   exec_len: 256       # Detailed computation block
+  
+  # Format configuration
+  use_special_format: true  # Enable [PLAN] [EXECUTION] [ANSWER] format
   
   # Attention configuration
   use_hdp_attention: true  # Enable hierarchical attention

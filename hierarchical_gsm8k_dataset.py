@@ -39,6 +39,7 @@ class GSM8KHierarchicalDataset(Dataset):
         add_special_tokens: bool = True,
         truncation: bool = True,
         padding: str = "max_length",
+        use_special_format: bool = True,
     ):
         """
         Initialize GSM8K Hierarchical Dataset.
@@ -52,6 +53,7 @@ class GSM8KHierarchicalDataset(Dataset):
             add_special_tokens: Whether to add BOS/EOS tokens
             truncation: Whether to truncate sequences that are too long
             padding: Padding strategy ("max_length" or "longest")
+            use_special_format: Whether to use [PLAN] [EXECUTION] [ANSWER] format
         """
         super().__init__()
         
@@ -63,6 +65,7 @@ class GSM8KHierarchicalDataset(Dataset):
         self.add_special_tokens = add_special_tokens
         self.truncation = truncation
         self.padding = padding
+        self.use_special_format = use_special_format
         
         # Load data from JSON
         self.data = self._load_data(data_path)
@@ -160,11 +163,24 @@ class GSM8KHierarchicalDataset(Dataset):
         question = sample['question']
         plan = sample.get('plan', '')
         execution = sample.get('execution', '')
+        answer = sample.get('answer', '')
+        
+        # Format output based on use_special_format flag
+        if self.use_special_format:
+            # New format: [PLAN] ... [EXECUTION] ... [ANSWER] ...
+            plan_text = f"[PLAN] {plan}"
+            execution_text = f"[EXECUTION] {execution}"
+            if answer:
+                execution_text = f"{execution_text} [ANSWER] {answer}"
+        else:
+            # Original format with prefixes
+            plan_text = plan
+            execution_text = execution
         
         # Tokenize each block separately
         q_tokens = self._tokenize_block(question, self.question_len, prefix=self.q_start_token)
-        p_tokens = self._tokenize_block(plan, self.plan_len, prefix=self.p_start_token)
-        e_tokens = self._tokenize_block(execution, self.exec_len, prefix=self.e_start_token)
+        p_tokens = self._tokenize_block(plan_text, self.plan_len, prefix="" if self.use_special_format else self.p_start_token)
+        e_tokens = self._tokenize_block(execution_text, self.exec_len, prefix="" if self.use_special_format else self.e_start_token)
         
         # Concatenate blocks
         input_ids = torch.cat([

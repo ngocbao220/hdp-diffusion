@@ -17,6 +17,7 @@ import noise_schedule
 import utils
 import numpy as np
 import itertools
+from models.hdp_attention_mask import get_hdp_attention_bias
 
 def _sample_categorical(categorical_probs):
   gumbel_norm = (1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log())
@@ -112,6 +113,19 @@ class Diffusion(L.LightningModule):
     self.neg_infinity = -1000000.0
     self.fast_forward_epochs = None
     self.fast_forward_batches = None
+    
+    # HDP attention configuration
+    self.use_hdp_attention = False
+    if hasattr(self.config, 'data') and hasattr(self.config.data, 'hdp'):
+      self.use_hdp_attention = self.config.data.hdp.get('use_hdp_attention', False)
+      if self.use_hdp_attention:
+        self.hdp_block_sizes = (
+          self.config.data.hdp.question_len,
+          self.config.data.hdp.plan_len,
+          self.config.data.hdp.exec_len
+        )
+        print(f"✅ HDP Attention enabled with block sizes: {self.hdp_block_sizes}")
+    
     self._validate_configuration()
 
   def _get_parameters(self):
@@ -131,13 +145,14 @@ class Diffusion(L.LightningModule):
 
   def _validate_configuration(self):
     if self.config.mode == 'sample_eval' and \
+        hasattr(self.config.sampling, 'first_hitting') and \
         self.config.sampling.first_hitting:
       assert self.config.loader.eval_batch_size == 1
     assert self.config.algo.backbone in {
       'dit', 'ar', 'hf_dit'}
     if self.config.algo.parameterization == 'ar':
       assert not self.config.algo.time_conditioning
-    if self.config.sampling.kv_cache:
+    if hasattr(self.config.sampling, 'kv_cache') and self.config.sampling.kv_cache:
       assert self.config.algo.name in {'ar', 'bd3lm'}
       
     if self.parameterization in {'sedd'}:
@@ -318,14 +333,37 @@ class Diffusion(L.LightningModule):
     assert sigma.ndim == 1, sigma.shape
     return sigma
 
-  def forward(self, x, sigma, sample_mode=False, store_kv=False):
+  def forward(self, x, sigma, sample_mode=False, store_kv=False, block_indices=None):
     """Returns log score."""
     sigma = self._process_sigma(sigma)
+    
+    # Create HDP attention mask if enabled and block_indices provided
+    hdp_mask = None
+    if self.use_hdp_attention and block_indices is not None and not sample_mode:
+      # For BD3-LM cross attention, x is concatenated (xt, x0), so block_indices needs to be duplicated
+      if self.cross_attn and x.shape[1] == block_indices.shape[1] * 2:
+        block_indices_full = torch.cat((block_indices, block_indices), dim=1)
+      else:
+        block_indices_full = block_indices
+      
+      # Create HDP attention bias for SDPA
+      hdp_mask = get_hdp_attention_bias(
+        block_indices=block_indices_full,
+        seq_len=x.shape[1],
+        block_sizes=self.hdp_block_sizes,
+        causal_within_block=False,
+        device=x.device,
+        dtype=torch.float32
+      )
+      # Add head dimension for broadcasting: (batch, seq, seq) -> (batch, 1, seq, seq)
+      hdp_mask = hdp_mask.unsqueeze(1)
+    
     with torch.amp.autocast('cuda', dtype=torch.float32):
       if self.config.algo.name == 'bd3lm':
         logits = self.backbone(x, sigma,
                               store_kv=store_kv,
-                              sample_mode=sample_mode)
+                              sample_mode=sample_mode,
+                              hdp_mask=hdp_mask)
       elif self.config.algo.name == 'ar':
         if self.config.algo.backbone == 'hf_dit':
           logits = self.backbone(x, None)     
@@ -356,8 +394,10 @@ class Diffusion(L.LightningModule):
 
   def training_step(self, batch, batch_idx):
     del batch_idx
+    block_indices = batch.get('block_indices', None)
     losses = self._loss(batch['input_ids'],
-                        batch['attention_mask'])
+                        batch['attention_mask'],
+                        block_indices=block_indices)
     self.metrics.train_nlls.update(losses.nlls, losses.token_mask)
     self.log(name='trainer/loss',
              value=losses.loss.item(),
@@ -816,7 +856,7 @@ class Diffusion(L.LightningModule):
     
     return input_tokens, output_tokens, new_attention_mask
 
-  def _forward_pass_diffusion(self, x0, t=None, sampling_eps_min=None, sampling_eps_max=None):
+  def _forward_pass_diffusion(self, x0, t=None, sampling_eps_min=None, sampling_eps_max=None, block_indices=None):
     if t is None:
       t = self._sample_t(x0.shape,
                          x0.device,
@@ -847,7 +887,7 @@ class Diffusion(L.LightningModule):
     if self.cross_attn:
       x_input = torch.cat((xt, x0), dim=-1)
 
-    model_output = self.forward(x_input, sigma=sigma)
+    model_output = self.forward(x_input, sigma=sigma, block_indices=block_indices)
     utils.print_nans(model_output, 'model_output')
 
     if self.parameterization == 'sedd':
@@ -861,7 +901,7 @@ class Diffusion(L.LightningModule):
     loss = loss_scale * log_p_theta
     return loss
 
-  def _loss(self, x0, attention_mask, t=None, sampling_eps_min=None, sampling_eps_max=None):
+  def _loss(self, x0, attention_mask, t=None, sampling_eps_min=None, sampling_eps_max=None, block_indices=None):
     if sampling_eps_min is None and hasattr(self, 'sampling_eps_min'):
       sampling_eps_min = self.sampling_eps_min
       sampling_eps_max = self.sampling_eps_max
@@ -879,7 +919,8 @@ class Diffusion(L.LightningModule):
       loss = self._forward_pass_diffusion(
         input_tokens,
         sampling_eps_min=sampling_eps_min,
-        sampling_eps_max=sampling_eps_max,)
+        sampling_eps_max=sampling_eps_max,
+        block_indices=block_indices)
     
     if self.ignore_bos and not self.training:
       attention_mask[:, 0] = 0

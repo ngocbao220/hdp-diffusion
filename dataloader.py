@@ -408,6 +408,9 @@ def get_dataset(
       streaming=streaming,
       trust_remote_code=True,
       revision=revision)
+  elif dataset_name == 'hdp_diffusion':
+    # HDP-Diffusion: return None, will be handled separately
+    return None
   else:
     dataset = datasets.load_dataset(
       dataset_name,
@@ -609,17 +612,33 @@ def get_dataloaders(config, tokenizer, skip_train=False,
   if skip_train:
     train_set = None
   else:
-    train_set = get_dataset(
-      config.data.train,
-      tokenizer,
-      mode='train',
-      wrap=config.data.wrap,
-      insert_eos=True if not hasattr(config.data, 'insert_train_eos') else config.data.insert_train_eos,
-      insert_special_tokens=True if not hasattr(config.data, 'insert_train_special') else config.data.insert_train_special,
-      cache_dir=config.data.cache_dir,
-      block_size=config.model.length,
-      streaming=config.data.streaming,
-      revision=config.data.get("train_revision", None))
+    # Check if using HDP-Diffusion dataset
+    if config.data.train == 'hdp_diffusion':
+      from hdp_dataset import HDPDataset
+      train_set = HDPDataset(
+        data_path=config.data.train_path,
+        tokenizer=tokenizer,
+        block_sizes=(
+          config.data.hdp.question_len,
+          config.data.hdp.plan_len,
+          config.data.hdp.exec_len
+        ),
+        add_special_tokens=True,
+        return_block_indices=True,
+        use_special_format=config.data.hdp.get('use_special_format', True)
+      )
+    else:
+      train_set = get_dataset(
+        config.data.train,
+        tokenizer,
+        mode='train',
+        wrap=config.data.wrap,
+        insert_eos=True if not hasattr(config.data, 'insert_train_eos') else config.data.insert_train_eos,
+        insert_special_tokens=True if not hasattr(config.data, 'insert_train_special') else config.data.insert_train_special,
+        cache_dir=config.data.cache_dir,
+        block_size=config.model.length,
+        streaming=config.data.streaming,
+        revision=config.data.get("train_revision", None))
   
   if config.data.valid in ['text8', 'lm1b', 'ag_news']:
     validation_split = 'test'
@@ -628,17 +647,33 @@ def get_dataloaders(config, tokenizer, skip_train=False,
   if skip_valid:
     valid_set = None
   else:
-    valid_set = get_dataset(
-      config.data.valid,
-      tokenizer,
-      wrap=config.data.wrap,
-      insert_eos=True if not hasattr(config.data, 'insert_valid_eos') else config.data.insert_valid_eos,
-      insert_special_tokens=True if not hasattr(config.data, 'insert_valid_special') else config.data.insert_valid_special,
-      mode=validation_split,
-      cache_dir=config.data.cache_dir,
-      block_size=config.model.length,
-      streaming=config.data.streaming,
-      revision=config.data.get("valid_revision", None))
+    # Check if using HDP-Diffusion dataset
+    if config.data.valid == 'hdp_diffusion':
+      from hdp_dataset import HDPDataset
+      valid_set = HDPDataset(
+        data_path=config.data.test_path,
+        tokenizer=tokenizer,
+        block_sizes=(
+          config.data.hdp.question_len,
+          config.data.hdp.plan_len,
+          config.data.hdp.exec_len
+        ),
+        add_special_tokens=True,
+        return_block_indices=True,
+        use_special_format=config.data.hdp.get('use_special_format', True)
+      )
+    else:
+      valid_set = get_dataset(
+        config.data.valid,
+        tokenizer,
+        wrap=config.data.wrap,
+        insert_eos=True if not hasattr(config.data, 'insert_valid_eos') else config.data.insert_valid_eos,
+        insert_special_tokens=True if not hasattr(config.data, 'insert_valid_special') else config.data.insert_valid_special,
+        mode=validation_split,
+        cache_dir=config.data.cache_dir,
+        block_size=config.model.length,
+        streaming=config.data.streaming,
+        revision=config.data.get("valid_revision", None))
 
   if skip_train:
     train_loader = None
