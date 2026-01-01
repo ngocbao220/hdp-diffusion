@@ -628,7 +628,7 @@ def get_dataloaders(config, tokenizer, skip_train=False,
         )
         
         train_dataset = HDPDataset(
-            data_path=config.data. train_path,
+            data_path=config.data.train_path,
             tokenizer=tokenizer,
             block_sizes=block_sizes,
             use_special_format=hdp_config.get('use_special_format', True)
@@ -650,12 +650,12 @@ def get_dataloaders(config, tokenizer, skip_train=False,
             collate_fn=collate_hdp_batch
         )
         
-        valid_dataloader = torch. utils.data.DataLoader(
+        valid_dataloader = torch.utils.data.DataLoader(
             valid_dataset,
             batch_size=config.loader.eval_batch_size,
             shuffle=False,
             num_workers=config.loader.num_workers,
-            pin_memory=config.loader. pin_memory,
+            pin_memory=config.loader.pin_memory,
             collate_fn=collate_hdp_batch
         )
         
@@ -669,10 +669,10 @@ def get_dataloaders(config, tokenizer, skip_train=False,
           tokenizer,
           wrap=config.data.wrap,
           insert_eos=True if not hasattr(config.data, 'insert_train_eos') else config.data.insert_train_eos,
-          insert_special_tokens=True if not hasattr(config. data, 'insert_train_special') else config.data. insert_train_special,
+          insert_special_tokens=True if not hasattr(config.data, 'insert_train_special') else config.data.insert_train_special,
           mode='train',
           cache_dir=config.data.cache_dir,
-          block_size=config. model.length,
+          block_size=config.model.length,
           streaming=config.data.streaming,
           revision=config.data.get("train_revision", None))
 
