@@ -618,7 +618,7 @@ def get_dataloaders(config, tokenizer, skip_train=False,
         LOGGER.info("Loading HDP-Diffusion dataset")
         
         # Get block sizes from config
-        hdp_config = config.data. hdp
+        hdp_config = config.data.hdp
         block_sizes = (
             hdp_config.question_len,
             hdp_config.plan_len, 
@@ -639,7 +639,7 @@ def get_dataloaders(config, tokenizer, skip_train=False,
             use_special_format=hdp_config.get('use_special_format', True)
         )
         
-        train_dataloader = torch.utils. data.DataLoader(
+        train_dataloader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=config.loader.batch_size,
             shuffle=True,
@@ -661,7 +661,19 @@ def get_dataloaders(config, tokenizer, skip_train=False,
         valid_dataloader.tokenizer = tokenizer
         
         return train_dataloader, valid_dataloader
-  
+    else:
+      train_set = get_dataset(
+          config.data.train,
+          tokenizer,
+          wrap=config.data.wrap,
+          insert_eos=True if not hasattr(config.data, 'insert_train_eos') else config.data.insert_train_eos,
+          insert_special_tokens=True if not hasattr(config. data, 'insert_train_special') else config.data. insert_train_special,
+          mode='train',
+          cache_dir=config.data.cache_dir,
+          block_size=config. model.length,
+          streaming=config.data.streaming,
+          revision=config.data.get("train_revision", None))
+          
   if config.data.valid in ['text8', 'lm1b', 'ag_news']:
     validation_split = 'test'
   else:

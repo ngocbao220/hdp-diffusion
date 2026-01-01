@@ -360,7 +360,7 @@ class Diffusion(L.LightningModule):
     
     # Get BD3-LM block diffusion mask
     # This should already be created in backbone, but we need to combine
-    if hasattr(self. backbone, 'block_diff_mask'):
+    if hasattr(self.backbone, 'block_diff_mask'):
         bd3_mask = self.backbone.block_diff_mask
         if bd3_mask is not None:
             # Ensure same device
@@ -497,6 +497,7 @@ class Diffusion(L.LightningModule):
     return False # not a valid elbo (biased estimate)
       
   def validation_step(self, batch, batch_idx):
+    block_indices = batch.get('block_indices', None)
     if self.var_min:
       for noise_clip_start in self.metrics.valid_vars.keys():
         sampling_eps_min, sampling_eps_max = noise_clip_start
