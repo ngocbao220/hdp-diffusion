@@ -16,64 +16,64 @@ from typing import Optional, Tuple
 
 def get_hdp_attention_mask(
     block_indices: torch.Tensor,
-    seq_len: int,
-    block_sizes: Tuple[int, int, int] = (128, 128, 256),
+    seq_len:  int,
+    block_sizes:  Tuple[int, int, int] = (128, 128, 256),
     causal_within_block: bool = False,
     device: Optional[torch.device] = None
 ) -> torch.Tensor:
     """
-    Generate Hierarchical Dual-Process attention mask.
+    Generate Hierarchical Dual-Process attention mask - VECTORIZED VERSION. 
     
     Args:
         block_indices: (batch_size, seq_len) tensor with values [0, 1, 2]
                       0 = Question, 1 = Plan, 2 = Execution
         seq_len: Total sequence length (should be 512)
-        block_sizes: Tuple of (question_len, plan_len, exec_len)
+        block_sizes:  Tuple of (question_len, plan_len, exec_len)
         causal_within_block: If True, use causal mask within each block
-        device: Target device for mask
+        device:  Target device for mask
     
     Returns:
         attention_mask: (batch_size, seq_len, seq_len) binary mask
                        1 = allow attention, 0 = mask out
                        
     Attention Rules:
-        - Question tokens: Attend ONLY to Question tokens
-        - Plan tokens: Attend to Question + Plan (NOT Execution)
-        - Execution tokens: Attend to Question + Plan + Execution
+        - Question tokens (0): Attend ONLY to Question tokens
+        - Plan tokens (1): Attend to Question + Plan (NOT Execution)
+        - Execution tokens (2): Attend to Question + Plan + Execution (all)
     """
-    if device is None:
+    if device is None: 
         device = block_indices.device
     
     batch_size = block_indices.shape[0]
+    q_len, p_len, e_len = block_sizes
     
-    # Initialize mask with zeros (all masked)
-    mask = torch.zeros(batch_size, seq_len, seq_len, 
-                      dtype=torch.bool, device=device)
+    # VECTORIZED IMPLEMENTATION - No Python loops!
+    # Create query and key block indices for broadcasting
+    # block_indices: (batch, seq) -> need (batch, seq_query, seq_key)
+    query_blocks = block_indices. unsqueeze(2)  # (batch, seq, 1)
+    key_blocks = block_indices.unsqueeze(1)    # (batch, 1, seq)
     
-    # For each position i, determine which blocks it can attend to
-    for i in range(seq_len):
-        # Get block ID for position i (same across batch)
-        block_i = block_indices[0, i].item()
-        
-        if block_i == 0:  # Question token
-            # Can only attend to Question tokens
-            question_positions = (block_indices[0] == 0)
-            mask[:, i, question_positions] = 1
-            
-        elif block_i == 1:  # Plan token
-            # Can attend to Question + Plan
-            valid_positions = (block_indices[0] == 0) | (block_indices[0] == 1)
-            mask[:, i, valid_positions] = 1
-            
-        elif block_i == 2:  # Execution token
-            # Can attend to all blocks (Question + Plan + Execution)
-            mask[:, i, :] = 1
+    # Rule 1: Question (0) can only attend to Question (0)
+    # Rule 2: Plan (1) can attend to Question (0) and Plan (1)
+    # Rule 3: Execution (2) can attend to all (0, 1, 2)
+    
+    # Key insight: token at position i (block b_i) can attend to position j (block b_j)
+    # if and only if b_j <= b_i
+    # This creates a "block-causal" pattern where later blocks can see earlier blocks
+    
+    mask = (key_blocks <= query_blocks)  # (batch, seq, seq)
     
     # Apply causal mask within blocks if requested
-    if causal_within_block:
-        causal_mask = torch.tril(torch.ones(seq_len, seq_len, 
-                                           dtype=torch.bool, device=device))
-        mask = mask & causal_mask.unsqueeze(0)
+    if causal_within_block: 
+        # Create position indices
+        pos_query = torch.arange(seq_len, device=device).unsqueeze(1)  # (seq, 1)
+        pos_key = torch.arange(seq_len, device=device).unsqueeze(0)    # (1, seq)
+        
+        # Causal:  query can only attend to key if pos_key <= pos_query
+        causal_mask = (pos_key <= pos_query)  # (seq, seq)
+        
+        # Combine:  must satisfy BOTH block constraint AND causal constraint
+        mask = mask & causal_mask. unsqueeze(0)
     
     return mask
 

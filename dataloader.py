@@ -21,6 +21,7 @@ import utils
 
 LOGGER = utils.get_logger(__name__)
 
+from hdp_dataset import HDPDataset, collate_hdp_batch
 
 def wt_detokenizer(string):
   # contractions
@@ -613,32 +614,53 @@ def get_dataloaders(config, tokenizer, skip_train=False,
     train_set = None
   else:
     # Check if using HDP-Diffusion dataset
-    if config.data.train == 'hdp_diffusion':
-      from hdp_dataset import HDPDataset
-      train_set = HDPDataset(
-        data_path=config.data.train_path,
-        tokenizer=tokenizer,
-        block_sizes=(
-          config.data.hdp.question_len,
-          config.data.hdp.plan_len,
-          config.data.hdp.exec_len
-        ),
-        add_special_tokens=True,
-        return_block_indices=True,
-        use_special_format=config.data.hdp.get('use_special_format', True)
-      )
-    else:
-      train_set = get_dataset(
-        config.data.train,
-        tokenizer,
-        mode='train',
-        wrap=config.data.wrap,
-        insert_eos=True if not hasattr(config.data, 'insert_train_eos') else config.data.insert_train_eos,
-        insert_special_tokens=True if not hasattr(config.data, 'insert_train_special') else config.data.insert_train_special,
-        cache_dir=config.data.cache_dir,
-        block_size=config.model.length,
-        streaming=config.data.streaming,
-        revision=config.data.get("train_revision", None))
+    if config.data.name == 'hdp_diffusion' or config.data.train == 'hdp_diffusion':
+        LOGGER.info("Loading HDP-Diffusion dataset")
+        
+        # Get block sizes from config
+        hdp_config = config.data. hdp
+        block_sizes = (
+            hdp_config.question_len,
+            hdp_config.plan_len, 
+            hdp_config.exec_len
+        )
+        
+        train_dataset = HDPDataset(
+            data_path=config.data. train_path,
+            tokenizer=tokenizer,
+            block_sizes=block_sizes,
+            use_special_format=hdp_config.get('use_special_format', True)
+        )
+        
+        valid_dataset = HDPDataset(
+            data_path=config.data.test_path,
+            tokenizer=tokenizer,
+            block_sizes=block_sizes,
+            use_special_format=hdp_config.get('use_special_format', True)
+        )
+        
+        train_dataloader = torch.utils. data.DataLoader(
+            train_dataset,
+            batch_size=config.loader.batch_size,
+            shuffle=True,
+            num_workers=config.loader.num_workers,
+            pin_memory=config.loader.pin_memory,
+            collate_fn=collate_hdp_batch
+        )
+        
+        valid_dataloader = torch. utils.data.DataLoader(
+            valid_dataset,
+            batch_size=config.loader.eval_batch_size,
+            shuffle=False,
+            num_workers=config.loader.num_workers,
+            pin_memory=config.loader. pin_memory,
+            collate_fn=collate_hdp_batch
+        )
+        
+        # Attach tokenizer for compatibility
+        valid_dataloader.tokenizer = tokenizer
+        
+        return train_dataloader, valid_dataloader
   
   if config.data.valid in ['text8', 'lm1b', 'ag_news']:
     validation_split = 'test'

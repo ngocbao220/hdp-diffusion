@@ -332,6 +332,56 @@ class Diffusion(L.LightningModule):
       sigma = torch.zeros_like(sigma)
     assert sigma.ndim == 1, sigma.shape
     return sigma
+  
+  def _create_hdp_bd3lm_mask(self, block_indices, seq_len, device):
+    """
+    Create combined HDP + BD3-LM attention mask.
+    
+    For BD3-LM, the sequence is [xt | x0] where: 
+    - xt tokens attend to:  their own block (diagonal) + previous x0 blocks
+    - x0 tokens attend to:  their own block + previous x0 blocks (block causal)
+    
+    We need to combine this with HDP constraints: 
+    - Question:  only attend to Question
+    - Plan: attend to Question + Plan
+    - Execution:  attend to all
+    """
+    n = seq_len // 2  # Original sequence length (before [xt, x0] concat)
+    
+    # Get HDP mask for the doubled sequence
+    hdp_mask = get_hdp_attention_bias(
+        block_indices=block_indices,
+        seq_len=seq_len,
+        block_sizes=self.hdp_block_sizes,
+        causal_within_block=False,
+        device=device,
+        dtype=torch.float32
+    )
+    
+    # Get BD3-LM block diffusion mask
+    # This should already be created in backbone, but we need to combine
+    if hasattr(self. backbone, 'block_diff_mask'):
+        bd3_mask = self.backbone.block_diff_mask
+        if bd3_mask is not None:
+            # Ensure same device
+            bd3_mask = bd3_mask.to(device)
+            
+            # Combine masks:  both must allow attention
+            # hdp_mask:  0 = allow, -inf = mask
+            # bd3_mask: True = allow, False = mask
+            if bd3_mask.dtype == torch.bool:
+                bd3_bias = torch.zeros_like(hdp_mask)
+                bd3_bias = bd3_bias. masked_fill(~bd3_mask, float('-inf'))
+            else:
+                bd3_bias = bd3_mask
+            
+            # Combined:  take minimum (most restrictive)
+            hdp_mask = torch.minimum(hdp_mask, bd3_bias)
+    
+    # Add head dimension:  (batch, seq, seq) -> (batch, 1, seq, seq)
+    hdp_mask = hdp_mask.unsqueeze(1)
+    
+    return hdp_mask
 
   def forward(self, x, sigma, sample_mode=False, store_kv=False, block_indices=None):
     """Returns log score."""
@@ -347,16 +397,11 @@ class Diffusion(L.LightningModule):
         block_indices_full = block_indices
       
       # Create HDP attention bias for SDPA
-      hdp_mask = get_hdp_attention_bias(
+      hdp_mask = self._create_hdp_bd3lm_mask(
         block_indices=block_indices_full,
         seq_len=x.shape[1],
-        block_sizes=self.hdp_block_sizes,
-        causal_within_block=False,
-        device=x.device,
-        dtype=torch.float32
+        device=x.device
       )
-      # Add head dimension for broadcasting: (batch, seq, seq) -> (batch, 1, seq, seq)
-      hdp_mask = hdp_mask.unsqueeze(1)
     
     with torch.amp.autocast('cuda', dtype=torch.float32):
       if self.config.algo.name == 'bd3lm':
@@ -460,7 +505,8 @@ class Diffusion(L.LightningModule):
           losses_clip = self._loss(batch['input_ids'],
                             batch['attention_mask'],
                             sampling_eps_min=sampling_eps_min,
-                            sampling_eps_max=sampling_eps_max)
+                            sampling_eps_max=sampling_eps_max,
+                            block_indices=block_indices)
           losses = Loss(
             nlls=losses_clip.nlls.clone(),
             token_mask=losses_clip.token_mask,
@@ -470,7 +516,8 @@ class Diffusion(L.LightningModule):
           losses_clip = self._loss(batch['input_ids'],
                             batch['attention_mask'],
                             sampling_eps_min=sampling_eps_min,
-                            sampling_eps_max=sampling_eps_max)
+                            sampling_eps_max=sampling_eps_max,
+                            block_indices=block_indices)
         if len(self.metrics.valid_vars[noise_clip_start]) < 100:
           # only report variance over 100 batches
           nlls = losses_clip.nlls
@@ -482,13 +529,15 @@ class Diffusion(L.LightningModule):
       losses = self._loss(batch['input_ids'],
                           batch['attention_mask'],
                           sampling_eps_min=1,
-                          sampling_eps_max=1)
+                          sampling_eps_max=1,
+                          block_indices=block_indices)
     else:
       # nelbo
       losses = self._loss(batch['input_ids'],
                           batch['attention_mask'],
                           sampling_eps_min=1e-3,
-                          sampling_eps_max=1)
+                          sampling_eps_max=1,
+                          block_indices=block_indices)
     self.metrics.valid_nlls.update(losses.nlls, losses.token_mask)
     return losses.loss
 
@@ -907,14 +956,14 @@ class Diffusion(L.LightningModule):
       sampling_eps_max = self.sampling_eps_max
     elif not hasattr(self, 'sampling_eps_min'):
       sampling_eps_min = 1e-3
-      sampling_eps_max = 1.0
+      sampling_eps_max = 1. 0
     (input_tokens, output_tokens,
      attention_mask) = self._maybe_sub_sample(
        x0, attention_mask)
     if self.parameterization == 'ar':
       output = self.forward(input_tokens, None)
-      loss = - output.gather(
-        -1, output_tokens[:, :, None])[:, :, 0]
+      loss = - output. gather(
+        -1, output_tokens[: , : , None])[: , :, 0]
     else:
       loss = self._forward_pass_diffusion(
         input_tokens,
@@ -923,10 +972,33 @@ class Diffusion(L.LightningModule):
         block_indices=block_indices)
     
     if self.ignore_bos and not self.training:
-      attention_mask[:, 0] = 0
+      attention_mask[: , 0] = 0
+    
+    # ============ HDP LOSS MASKING - NEW CODE ============
+    # Only compute loss on Plan + Execution blocks, not Question
+    if self.use_hdp_attention and block_indices is not None:
+      # block_indices: 0=Question, 1=Plan, 2=Execution
+      # We want to mask out Question (block 0) from loss
+      hdp_loss_mask = (block_indices >= 1).float()  # 1 for Plan/Exec, 0 for Question
       
+      # Combine with attention_mask
+      attention_mask = attention_mask * hdp_loss_mask
+      
+      # Optional: Log separate losses for debugging
+      if self.training and hasattr(self, 'global_step') and self.global_step % 100 == 0:
+        with torch.no_grad():
+          plan_mask = (block_indices == 1).float() * attention_mask
+          exec_mask = (block_indices == 2).float() * attention_mask
+          if plan_mask.sum() > 0:
+            plan_loss = (loss * plan_mask).sum() / plan_mask.sum()
+            self.log('trainer/plan_loss', plan_loss. item(), on_step=True, on_epoch=False)
+          if exec_mask.sum() > 0:
+            exec_loss = (loss * exec_mask).sum() / exec_mask.sum()
+            self.log('trainer/exec_loss', exec_loss. item(), on_step=True, on_epoch=False)
+    # ============ END HDP LOSS MASKING ============
+       
     nlls = (loss * attention_mask)
-    token_nll = nlls.sum() / attention_mask.sum()
+    token_nll = nlls. sum() / attention_mask.sum()
     return Loss(loss=token_nll,
                 nlls=nlls,
                 token_mask=attention_mask)
