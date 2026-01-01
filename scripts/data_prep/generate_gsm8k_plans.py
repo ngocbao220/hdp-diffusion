@@ -150,15 +150,23 @@ def create_hierarchical_dataset(
         full_solution = example['answer']
         parts = full_solution.split('####')
         
+        # Clean execution (remove <<...>> notation)
         execution = parts[0].strip()
+        execution = re.sub(r'<<[^>]+>>', '', execution)  # Remove <<...>>
+        execution = re.sub(r'\s+', ' ', execution).strip()  # Clean whitespace
+        
         answer_numerical = parts[1].strip() if len(parts) > 1 else ""
+        
+        # === NEW: Build full_text with special tokens ===
+        full_text = f"[PLAN] {clean_plan} [EXEC] {execution} [ANSWER] {answer_numerical}"
         
         hierarchical_data.append({
             "id": f"gsm8k_{idx}",
             "question": example['question'],
+            "full_text": full_text,  # ← Model sẽ train/generate cái này
             "plan": clean_plan,
             "execution": execution,
-            "answer_numerical": answer_numerical
+            "answer": answer_numerical
         })
         
     # Ensure directory exists
@@ -170,15 +178,31 @@ def create_hierarchical_dataset(
         
     print(f"✅ Saved {len(hierarchical_data)} examples.")
     
-    # Preview
-    print("\n" + "="*50)
-    print("SAMPLE PREVIEW")
-    print("="*50)
+    # === IMPROVED PREVIEW ===
+    print("\n" + "="*80)
+    print("📊 SAMPLE PREVIEW")
+    print("="*80)
     sample = hierarchical_data[0]
-    print(f"Q: {sample['question'][:100]}...")
-    print(f"Plan: {sample['plan']}")
-    print(f"Exec: {sample['execution'][:100]}...")
-    print("="*50)
+    print(f"\n🔹 ID: {sample['id']}")
+    print(f"\n❓ QUESTION:\n{sample['question']}\n")
+    print(f"📝 PLAN:\n{sample['plan']}\n")
+    print(f"⚙️  EXECUTION:\n{sample['execution']}\n")
+    print(f"✅ ANSWER: {sample['answer']}\n")
+    print(f"🔗 FULL TEXT (what model sees):")
+    print(f"{sample['full_text']}\n")
+    print("="*80)
+    
+    # === NEW: Statistics ===
+    print("\n📈 DATASET STATISTICS:")
+    avg_plan_len = sum(len(d['plan'].split()) for d in hierarchical_data) / len(hierarchical_data)
+    avg_exec_len = sum(len(d['execution'].split()) for d in hierarchical_data) / len(hierarchical_data)
+    avg_total_len = sum(len(d['full_text'].split()) for d in hierarchical_data) / len(hierarchical_data)
+    
+    print(f"  • Total examples: {len(hierarchical_data)}")
+    print(f"  • Avg Plan length: {avg_plan_len:.1f} words")
+    print(f"  • Avg Execution length: {avg_exec_len:.1f} words")
+    print(f"  • Avg Total length: {avg_total_len:.1f} words")
+    print(f"  • Plan/Exec ratio: {avg_plan_len/avg_exec_len:.2f}")
 
 def main():
     parser = argparse.ArgumentParser()

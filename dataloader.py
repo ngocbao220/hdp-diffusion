@@ -401,13 +401,13 @@ def get_dataset(
       streaming=streaming,
       revision=revision)
   elif dataset_name == 'gsm8k':
-    # Load hierarchical GSM8K from JSON files
-    import gsm8k_dataloader
-    return gsm8k_dataloader.load_gsm8k_hierarchical(
-      mode=mode,
-      block_size=block_size,
-      tokenizer=tokenizer,
-      insert_eos=insert_eos)
+    # Load GSM8K dataset (baseline: simple Q&A format)
+    dataset = datasets.load_dataset(
+      'gsm8k', 'main',
+      cache_dir=cache_dir,
+      streaming=streaming,
+      trust_remote_code=True,
+      revision=revision)
   else:
     dataset = datasets.load_dataset(
       dataset_name,
@@ -419,6 +419,12 @@ def get_dataset(
   if dataset_name in ['lambada', 'openwebtext-train',
                       'openwebtext-valid']:
     data = dataset
+  elif dataset_name == 'gsm8k':
+    # GSM8K has 'train' and 'test' splits, no 'validation'
+    if mode == 'validation' or mode == 'valid':
+      data = dataset['test']
+    else:
+      data = dataset[mode]
   else:
     data = dataset[mode]
 
@@ -450,6 +456,10 @@ def get_dataset(
       text = example['sentence']
     elif 'scientific_papers' in dataset_name:
       text = example['article']
+    elif dataset_name == 'gsm8k':
+      # Combine question and answer into single text
+      text = [f"Question: {q}\nAnswer: {a}" 
+              for q, a in zip(example['question'], example['answer'])]
     else:
       text = example['text']
     
@@ -504,6 +514,9 @@ def get_dataset(
   elif dataset_name == 'ag_news':
     tokenized_dataset = tokenized_dataset.remove_columns(
       ['text', 'label'])
+  elif dataset_name == 'gsm8k':
+    tokenized_dataset = tokenized_dataset.remove_columns(
+      ['question', 'answer'])
   else:
     tokenized_dataset = tokenized_dataset.remove_columns(
       'text')

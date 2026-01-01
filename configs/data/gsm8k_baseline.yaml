@@ -1,0 +1,7 @@
+# GSM8K Baseline Configuration (Simple Q&A format)
+train: gsm8k
+valid: gsm8k
+tokenizer_name_or_path: gpt2
+cache_dir: .cache
+wrap: True
+streaming: False
