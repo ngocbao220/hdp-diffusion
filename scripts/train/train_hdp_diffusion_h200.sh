@@ -49,15 +49,16 @@ PRETRAIN_CKPT=null
 OUTPUT_DIR="outputs/hdp_diffusion_h200_bs${BLOCK_SIZE}"
 mkdir -p ${OUTPUT_DIR}
 
-echo "H200 Configuration:"
-echo "  GPU: H200 (141GB VRAM)"
+echo "2xH200 Configuration:"
+echo "  GPUs: 2x H200 (141GB VRAM each)"
 echo "  Hierarchical Structure:"
 echo "    Question: ${QUESTION_LEN} tokens"
 echo "    Plan: ${PLAN_LEN} tokens"
 echo "    Execution: ${EXEC_LEN} tokens"
 echo "    Total: ${SEQ_LEN} tokens"
 echo "  Diffusion Block Size: ${BLOCK_SIZE}"
-echo "  Batch Size: ${BATCH_SIZE}"
+echo "  Batch Size: ${BATCH_SIZE} per GPU (256 total per step)"
+echo "  Strategy: DDP (Distributed Data Parallel)"
 echo "  Global Batch Size: ${GLOBAL_BATCH_SIZE}"
 echo "  Gradient Accumulation: ${GRAD_ACCUM}"
 echo "  Learning Rate: ${LR}"
@@ -95,8 +96,9 @@ python -u main.py \
     trainer.val_check_interval=null \
     +trainer.check_val_every_n_epoch=${VAL_EVERY_N_EPOCH} \
     trainer.log_every_n_steps=${LOG_INTERVAL} \
-    trainer.devices=1 \
+    trainer.devices=2 \
     trainer.num_nodes=1 \
+    trainer.strategy=ddp \
     trainer.precision=bf16-mixed \
     trainer.gradient_clip_val=1.0 \
     wandb.name=hdp-diffusion-h200-bs${BLOCK_SIZE} \

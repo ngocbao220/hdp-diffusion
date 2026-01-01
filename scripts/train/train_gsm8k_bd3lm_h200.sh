@@ -23,11 +23,11 @@ echo "=========================================="
 BLOCK_SIZE=16  # Standard block size for BD3-LM (can try 4, 8, 16)
 SEQ_LENGTH=512 # Context length for GSM8K problems
 
-# H200 Optimized Settings (141GB VRAM)
-BATCH_SIZE=64         # 4x larger than original (was 32)
-EVAL_BATCH_SIZE=32       # Larger eval batch
-GLOBAL_BATCH_SIZE=256    # 4x original (was 128)
-GRAD_ACCUM=4             # To reach global batch size
+# 2xH200 Optimized Settings (141GB VRAM each)
+BATCH_SIZE=128           # Per GPU: 128 x 2 = 256 per step
+EVAL_BATCH_SIZE=64       # Larger eval batch
+GLOBAL_BATCH_SIZE=512    # Same global batch
+GRAD_ACCUM=2             # Reduced from 4 (256 x 2 = 512)
 
 MAX_STEPS=50000
 WARMUP_STEPS=5000
@@ -44,15 +44,16 @@ PRETRAIN_CKPT=null  # or path to pretrained checkpoint
 OUTPUT_DIR="outputs/gsm8k_bd3lm_h200_bs${BLOCK_SIZE}"
 mkdir -p ${OUTPUT_DIR}
 
-echo "H200 Configuration:"
-echo "  GPU: H200 (141GB VRAM)"
-echo "  Batch Size: ${BATCH_SIZE} (per step)"
+echo "2xH200 Configuration:"
+echo "  GPUs: 2x H200 (141GB VRAM each)"
+echo "  Batch Size: ${BATCH_SIZE} per GPU (256 total per step)"
 echo "  Global Batch Size: ${GLOBAL_BATCH_SIZE}"
 echo "  Gradient Accumulation: ${GRAD_ACCUM}"
 echo "  Learning Rate: ${LR}"
 echo "  Sequence Length: ${SEQ_LENGTH}"
 echo "  Block Size: ${BLOCK_SIZE}"
 echo "  Max Steps: ${MAX_STEPS}"
+echo "  Strategy: DDP (Distributed Data Parallel)"
 echo "  Output: ${OUTPUT_DIR}"
 echo "=========================================="
 
@@ -84,8 +85,9 @@ python -u main.py \
     trainer.val_check_interval=null \
     +trainer.check_val_every_n_epoch=${VAL_EVERY_N_EPOCH} \
     trainer.log_every_n_steps=${LOG_INTERVAL} \
-    trainer.devices=1 \
+    trainer.devices=2 \
     trainer.num_nodes=1 \
+    trainer.strategy=ddp \
     trainer.precision=bf16-mixed \
     trainer.gradient_clip_val=1.0 \
     wandb.name=bd3lm-gsm8k-h200-bs${BLOCK_SIZE} \
@@ -104,9 +106,10 @@ if [ ${EXIT_CODE} -eq 0 ]; then
     echo "Checkpoints saved to: ${OUTPUT_DIR}"
     echo ""
     echo "Training Speed Estimate:"
-    echo "  With H200 (batch_size=128):"
-    echo "    ~2-3x faster than 4xA100"
-    echo "    Expected time: ~12-18 hours for 50K steps"
+    echo "  With 2xH200 (batch_size=128 per GPU):"
+    echo "    ~1.8x faster than 1xH200"
+    echo "    ~3.5-5x faster than 4xA100"
+    echo "    Expected time: ~35-38 hours for 50K steps (~1.5 days)"
 else
     echo "❌ Training failed!"
     echo "Check logs for details"
