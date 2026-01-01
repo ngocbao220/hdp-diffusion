@@ -1,0 +1,29 @@
+# Hierarchical Block Diffusion Configuration
+# For Plan-then-Generate Architecture
+
+# Hierarchical structure
+hierarchical:
+  enabled: true
+  question_len: 256  # Length of question/context tokens
+  plan_len: 256      # Length of plan block  
+  exec_len: 512      # Length of execution block
+  total_len: 1024    # Total: 256 + 256 + 512 = 1024
+
+# Training settings
+training:
+  use_hierarchical_collator: true
+  # Disable arbitrary-length generation during training
+  var_length_gen: false
+  
+# Sampling settings  
+sampling:
+  # For hierarchical generation, we can do:
+  # 1. Full sequence generation (question -> plan -> execution)
+  # 2. Plan-only generation (given question, generate plan)
+  # 3. Execution-only generation (given question + plan, generate execution)
+  hierarchical_mode: 'full'  # 'full', 'plan_only', 'exec_only'
+  
+  # Simplified generation (no arbitrary-length for initial implementation)
+  var_length: false
+  first_hitting: true
+  kv_cache: true

@@ -703,9 +703,21 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     else:
       return bias_dropout_add_scale_fused_inference
     
-  def gen_mask(self, seqlen, block_size, attn_backend='sdpa'):
-    """Genererates attention mask"""
-    if attn_backend == 'flex' and FLEX_ATTN_AVAILABLE:
+  def gen_mask(self, seqlen, block_size, attn_backend='sdpa', hierarchical_config=None):
+    """Genererates attention mask (standard or hierarchical)"""
+    if hierarchical_config is not None:
+      # Use hierarchical mask for plan-then-generate
+      from models.hierarchical_mask import create_hierarchical_mask
+      self.block_diff_mask = create_hierarchical_mask(
+        seqlen=seqlen,
+        block_size=block_size,
+        question_len=hierarchical_config.get('question_len', 256),
+        plan_len=hierarchical_config.get('plan_len', 256),
+        exec_len=hierarchical_config.get('exec_len', 512),
+        attn_backend=attn_backend
+      )
+      self.hierarchical_config = hierarchical_config
+    elif attn_backend == 'flex' and FLEX_ATTN_AVAILABLE:
       self.block_diff_mask = create_block_mask(
         partial(block_diff_mask, block_size=block_size, n=seqlen),
         B=None, H=None, Q_LEN=seqlen*2, KV_LEN=seqlen*2)

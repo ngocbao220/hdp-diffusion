@@ -1,0 +1,32 @@
+# GSM8K Hierarchical Dataset Configuration
+
+name: gsm8k
+train: gsm8k
+valid: gsm8k
+train_path: data/gsm8k/gsm8k_hierarchical_train.json
+test_path: data/gsm8k/gsm8k_hierarchical_test.json
+
+# Standard dataloader settings
+tokenizer_name_or_path: gpt2
+cache_dir: .cache
+wrap: false
+streaming: false
+insert_train_eos: true
+insert_valid_eos: true
+insert_train_special: true
+insert_valid_special: true
+
+# Hierarchical structure for GSM8K
+hierarchical:
+  enabled: true
+  question_len: 128  # Short math problems
+  plan_len: 128      # Abstract reasoning steps
+  exec_len: 256      # Detailed calculations
+  mode: full         # Full hierarchical attention
+
+# Dataset specific settings
+max_length: 512      # question_len + plan_len + exec_len
+vocab_size: 50257    # GPT-2 tokenizer
+
+# Data format
+format: hierarchical_json

@@ -400,6 +400,14 @@ def get_dataset(
       cache_dir=cache_dir,
       streaming=streaming,
       revision=revision)
+  elif dataset_name == 'gsm8k':
+    # Load hierarchical GSM8K from JSON files
+    import gsm8k_dataloader
+    return gsm8k_dataloader.load_gsm8k_hierarchical(
+      mode=mode,
+      block_size=block_size,
+      tokenizer=tokenizer,
+      insert_eos=insert_eos)
   else:
     dataset = datasets.load_dataset(
       dataset_name,
