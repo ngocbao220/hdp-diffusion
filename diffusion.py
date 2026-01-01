@@ -957,7 +957,7 @@ class Diffusion(L.LightningModule):
       sampling_eps_max = self.sampling_eps_max
     elif not hasattr(self, 'sampling_eps_min'):
       sampling_eps_min = 1e-3
-      sampling_eps_max = 1. 0
+      sampling_eps_max = 1.0
     (input_tokens, output_tokens,
      attention_mask) = self._maybe_sub_sample(
        x0, attention_mask)

@@ -614,7 +614,9 @@ def get_dataloaders(config, tokenizer, skip_train=False,
     train_set = None
   else:
     # Check if using HDP-Diffusion dataset
-    if config.data.name == 'hdp_diffusion' or config.data.train == 'hdp_diffusion':
+    is_hdp = (hasattr(config.data, 'name') and config.data.name == 'hdp_diffusion') or \
+             (hasattr(config.data, 'train') and config.data.train == 'hdp_diffusion')
+    if is_hdp:
         LOGGER.info("Loading HDP-Diffusion dataset")
         
         # Get block sizes from config
@@ -673,7 +675,7 @@ def get_dataloaders(config, tokenizer, skip_train=False,
           block_size=config. model.length,
           streaming=config.data.streaming,
           revision=config.data.get("train_revision", None))
-          
+
   if config.data.valid in ['text8', 'lm1b', 'ag_news']:
     validation_split = 'test'
   else:
