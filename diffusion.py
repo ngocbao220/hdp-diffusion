@@ -788,6 +788,16 @@ class Diffusion(L.LightningModule):
       Returns:
           List of decoded text samples
       """
+      # DEBUG: Check which sampler will be used
+      print(f"\n{'='*70}")
+      print(f"🔍 [_sample] Called with:")
+      print(f"{'='*70}")
+      print(f"parameterization: {self.parameterization}")
+      print(f"sampler: {self.sampler}")
+      print(f"seqlen: {seqlen}")
+      print(f"num_steps: {num_steps}")
+      print(f"question_tokens: {'provided' if question_tokens is not None else 'None'}")
+      
       if seqlen is None:
           seqlen = self.config.model.length
       if batch_size_per_gpu is None: 
@@ -795,6 +805,8 @@ class Diffusion(L.LightningModule):
       samples = []
       
       if self.parameterization == 'ar':
+          print(f"➡️  Using AR sampler")
+          print(f"{'='*70}\n")
           for _ in range(self.config.sampling.num_sample_batches):
               sample_i, num_tries = None, 0
               while sample_i is None:
@@ -808,6 +820,8 @@ class Diffusion(L.LightningModule):
           return self. tokenizer.batch_decode(samples)
       
       if self.sampler == 'semi_ar':
+          print(f"➡️  Using Semi-AR sampler")
+          print(f"{'='*70}\n")
           for _ in range(self.config.sampling. num_sample_batches):
               sample_i, num_tries = None, 0
               while sample_i is None: 
@@ -823,6 +837,8 @@ class Diffusion(L.LightningModule):
               self.metrics.nfes.update(nfes)
               self.metrics.gen_nfes. append(nfes)
       else:
+          print(f"➡️  Using Analytic sampler (DDPM/default)")
+          print(f"{'='*70}\n")
           nfes = num_steps
           for _ in range(self.config.sampling. num_sample_batches):
               sample_i, num_tries = None, 0
