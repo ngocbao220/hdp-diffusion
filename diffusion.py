@@ -19,6 +19,7 @@ import utils
 import numpy as np
 import itertools
 from models.hdp_attention_mask import get_hdp_attention_bias
+# Note: hdp_temporal_mask not used with sequential denoising approach
 
 LOGGER = logging.getLogger(__name__)
 
@@ -362,10 +363,13 @@ class Diffusion(L.LightningModule):
     - Question:  only attend to Question
     - Plan: attend to Question + Plan
     - Execution:  attend to all
+    
+    Note: With sequential denoising, this is a STATIC mask.
+    The hierarchy is enforced by freezing blocks, not by changing mask.
     """
     n = seq_len // 2  # Original sequence length (before [xt, x0] concat)
     
-    # Get HDP mask for the doubled sequence
+    # Static HDP mask (hierarchy enforced by sequential denoising)
     hdp_mask = get_hdp_attention_bias(
         block_indices=block_indices,
         seq_len=seq_len,
@@ -407,7 +411,15 @@ class Diffusion(L.LightningModule):
     return hdp_mask
 
   def forward(self, x, sigma, sample_mode=False, store_kv=False, block_indices=None):
-    """Returns log score."""
+    """Returns log score.
+    
+    Args:
+        x: Input tensor
+        sigma: Noise level
+        sample_mode: Whether in sampling mode
+        store_kv: Whether to store key-value cache
+        block_indices: HDP block assignments
+    """
     # Only print debug info once at the start of sampling (not every step!)
     if sample_mode and not hasattr(self, '_forward_debug_printed'): 
         self._forward_debug_printed = True
@@ -1302,20 +1314,76 @@ class Diffusion(L.LightningModule):
       timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
       dt = (1 - eps) / num_steps
       
-      print(f"\n📊 Starting {num_steps} denoising steps...")
-      if block_indices is not None:
-          print(f"   ✅ HDP mode: block_indices provided (shape={block_indices.shape})")
-      else:
-          print(f"   ⚠️  Standard mode: no block_indices")
-      
-      for i in tqdm(range(num_steps), desc='HDP Sampling' if block_indices is not None else 'Sampling'):
-          t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
-
-          x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
+      # HDP Sequential Denoising: Split into 2 phases
+      if self.use_hdp_attention and block_indices is not None:
+          phase1_steps = num_steps // 2  # First half: denoise Plan
+          phase2_steps = num_steps - phase1_steps  # Second half: denoise Exec
           
-          # HDP:  Keep question tokens fixed after each update
-          if self.use_hdp_attention and question_tokens is not None and q_len > 0:
-            x[: , :q_len] = question_tokens
+          q_len, p_len, e_len = self.hdp_block_sizes
+          plan_start = q_len
+          plan_end = q_len + p_len
+          exec_start = plan_end
+          
+          print(f"\n📊 HDP Sequential Denoising:")
+          print(f"   Phase 1 (steps 0-{phase1_steps}): Denoise PLAN only")
+          print(f"   Phase 2 (steps {phase1_steps}-{num_steps}): Denoise EXEC only")
+          
+          # Save initial Exec state (will be frozen during Phase 1)
+          x_exec_frozen = x[:, exec_start:].clone()
+          
+          # ============ PHASE 1: DENOISE PLAN ============
+          print(f"\n🔵 Phase 1: Denoising Plan...")
+          for i in tqdm(range(phase1_steps), desc='Phase 1: Plan'):
+              t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
+              
+              # Denoise entire sequence (but will freeze Exec after)
+              x_updated = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
+              
+              # Keep Question and Exec frozen
+              if question_tokens is not None and q_len > 0:
+                  x_updated[:, :q_len] = question_tokens  # Keep Question
+              x_updated[:, exec_start:] = x_exec_frozen  # Keep Exec frozen at noise
+              
+              x = x_updated
+          
+          # Save clean Plan state
+          x_plan_clean = x[:, plan_start:plan_end].clone()
+          print(f"✅ Phase 1 complete: Plan denoised, Exec still at noise")
+          
+          # ============ PHASE 2: DENOISE EXEC ============
+          print(f"\n🟢 Phase 2: Denoising Execution (conditioned on clean Plan)...")
+          for i in tqdm(range(phase2_steps), desc='Phase 2: Exec'):
+              step_idx = phase1_steps + i
+              t = timesteps[step_idx] * torch.ones(x.shape[0], 1, device=self.device)
+              
+              # Denoise entire sequence (but will freeze Plan after)
+              x_updated = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
+              
+              # Keep Question and Plan frozen at clean state
+              if question_tokens is not None and q_len > 0:
+                  x_updated[:, :q_len] = question_tokens  # Keep Question
+              x_updated[:, plan_start:plan_end] = x_plan_clean  # Keep Plan at clean state
+              
+              x = x_updated
+          
+          print(f"✅ Phase 2 complete: Exec denoised (conditioned on clean Plan)")
+          
+      else:
+          # Standard denoising (no sequential phases)
+          print(f"\n📊 Starting {num_steps} denoising steps...")
+          if block_indices is not None:
+              print(f"   ✅ HDP mode: block_indices provided (shape={block_indices.shape})")
+          else:
+              print(f"   ⚠️  Standard mode: no block_indices")
+          
+          for i in tqdm(range(num_steps), desc='HDP Sampling' if block_indices is not None else 'Sampling'):
+              t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
+
+              x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
+              
+              # HDP:  Keep question tokens fixed after each update
+              if self.use_hdp_attention and question_tokens is not None and q_len > 0:
+                x[:, :q_len] = question_tokens
       
       # Final denoising step
       t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
