@@ -35,6 +35,23 @@ def _load_from_checkpoint(config, tokenizer):
     return diffusion.Diffusion(
       config, tokenizer=tokenizer).to('cuda')
 
+  # 🔧 FIX: Extract vocab_size from checkpoint BEFORE creating model
+  # to avoid mask_index mismatch
+  import torch
+  ckpt = torch.load(config.eval.checkpoint_path, map_location='cpu')
+  if 'state_dict' in ckpt:
+    # Get vocab_size from embedding layer shape
+    embed_key = 'backbone.vocab_embed.embedding'
+    if embed_key in ckpt['state_dict']:
+      checkpoint_vocab_size = ckpt['state_dict'][embed_key].shape[0]
+      print(f"\n🔧 Checkpoint vocab_size: {checkpoint_vocab_size}")
+      print(f"   Tokenizer vocab_size: {len(tokenizer)}")
+      
+      # Override config vocab_size to match checkpoint
+      if checkpoint_vocab_size != len(tokenizer):
+        print(f"   ⚠️  MISMATCH DETECTED! Adjusting model vocab_size to {checkpoint_vocab_size}")
+        config.model.vocab_size = checkpoint_vocab_size
+
   return diffusion.Diffusion.load_from_checkpoint(
     config.eval.checkpoint_path,
     tokenizer=tokenizer,
