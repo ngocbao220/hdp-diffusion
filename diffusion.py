@@ -1113,7 +1113,8 @@ class Diffusion(L.LightningModule):
       # ⚠️ CRITICAL FIX: Zero out PAD tokens completely for HDP
       # PAD tokens (self.mask_index) should NOT contribute to loss
       # This prevents model from "cheating" by learning PAD patterns
-      pad_mask = (output_tokens != self.mask_index).float()
+      # Use x0 (original tokens before subsampling) to identify PAD tokens
+      pad_mask = (x0 != self.mask_index).float()
       
       # 🔍 DEBUG: Print loss masking info on first step
       if self.training and not hasattr(self, '_loss_mask_debug_printed'):
@@ -1124,9 +1125,9 @@ class Diffusion(L.LightningModule):
         print(f"block_indices.shape: {block_indices.shape}")
         print(f"attention_mask.shape: {attention_mask.shape}")
         print(f"PAD tokens (mask_index={self.mask_index})")
-        print(f"  Total tokens: {output_tokens.numel()}")
-        print(f"  PAD tokens: {(output_tokens == self.mask_index).sum().item()}")
-        print(f"  Content tokens: {(output_tokens != self.mask_index).sum().item()}")
+        print(f"  Total tokens: {x0.numel()}")
+        print(f"  PAD tokens: {(x0 == self.mask_index).sum().item()}")
+        print(f"  Content tokens: {(x0 != self.mask_index).sum().item()}")
         print(f"\nActive tokens by block (AFTER removing PAD):")
         for block_id in range(3):
           block_mask = (block_indices == block_id).float()
