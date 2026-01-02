@@ -42,7 +42,7 @@ python -u main.py \
     data.hdp.use_special_format=true \
     noise=loglinear \
     loader.batch_size=1 \
-    loader.num_workers=0 \
+    loader.num_workers=2 \
     loader.global_batch_size=1 \
     optim.lr=1e-3 \
     optim.weight_decay=0 \
