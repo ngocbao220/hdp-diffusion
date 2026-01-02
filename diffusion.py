@@ -137,9 +137,8 @@ class Diffusion(L.LightningModule):
         )
 
         print(f"✅ HDP Attention enabled with block sizes: {self.hdp_block_sizes}")
-        print(f"   Question:  {q_len}, Plan: {p_len}, Execution: {e_len}")
+        print(f"   Question: {q_len}, Plan: {p_len}, Execution: {e_len}")
         print(f"   Total seq length: {sum(self.hdp_block_sizes)}")
-        print(f"✅ HDP Attention enabled with block sizes: {self.hdp_block_sizes}")
     
     self._validate_configuration()
 
@@ -1178,44 +1177,57 @@ class Diffusion(L.LightningModule):
       print(f"🔍 [_analytic_sampler] Starting sampling")
       print(f"{'='*70}")
       print(f"use_hdp_attention: {self.use_hdp_attention}")
+      print(f"seqlen: {seqlen}, n_samples: {n_samples}")
       print(f"has hdp_block_sizes: {hasattr(self, 'hdp_block_sizes')}")
-      if hasattr(self, 'hdp_block_sizes'):
+      if hasattr(self, 'hdp_block_sizes') and self.hdp_block_sizes is not None:
           print(f"hdp_block_sizes: {self.hdp_block_sizes}")
 
-      if self.use_hdp_attention and not hasattr(self, 'hdp_block_sizes'):
-        print(f"⚠️  WARNING: use_hdp_attention=True but hdp_block_sizes not found!")
-        print(f"   Attempting to reconstruct from config...")
+      # Ensure hdp_block_sizes exists and matches seqlen
+      if self.use_hdp_attention:
+        if not hasattr(self, 'hdp_block_sizes') or self.hdp_block_sizes is None:
+          print(f"⚠️  WARNING: use_hdp_attention=True but hdp_block_sizes not set!")
+          print(f"   Attempting to reconstruct from config...")
+          
+          if hasattr(self.config, 'data') and hasattr(self.config.data, 'hdp'):
+              self.hdp_block_sizes = (
+                  self.config.data.hdp.question_len,
+                  self.config.data.hdp.plan_len,
+                  self.config.data.hdp.exec_len
+              )
+              print(f"   ✅ Reconstructed hdp_block_sizes: {self.hdp_block_sizes}")
+          else:
+              print(f"   ❌ Cannot reconstruct! Disabling HDP attention.")
+              self.use_hdp_attention = False
         
-        if hasattr(self. config, 'data') and hasattr(self.config.data, 'hdp'):
-            self.hdp_block_sizes = (
-                self.config.data.hdp.question_len,
-                self.config.data. hdp.plan_len,
-                self.config.data.hdp.exec_len
-            )
-            print(f"   ✅ Reconstructed hdp_block_sizes: {self.hdp_block_sizes}")
-        else:
-            print(f"   ❌ Cannot reconstruct!  Disabling HDP attention.")
-            self.use_hdp_attention = False
-
-      if self.use_hdp_attention: 
-        self.hdp_block_sizes = (128, 128, 256)  # Hardcode for testing
-        print(f"🔧 Force-set hdp_block_sizes:  {self.hdp_block_sizes}")
+        # Validate block sizes match seqlen
+        if self.use_hdp_attention and self.hdp_block_sizes is not None:
+          expected_len = sum(self.hdp_block_sizes)
+          if expected_len != seqlen:
+            print(f"⚠️  WARNING: hdp_block_sizes sum ({expected_len}) != seqlen ({seqlen})")
+            print(f"   Adjusting block sizes proportionally to match seqlen...")
+            q_len, p_len, e_len = self.hdp_block_sizes
+            ratio = seqlen / expected_len
+            q_len = int(q_len * ratio)
+            p_len = int(p_len * ratio)
+            e_len = seqlen - q_len - p_len  # Ensure exact match
+            self.hdp_block_sizes = (q_len, p_len, e_len)
+            print(f"   ✅ Adjusted hdp_block_sizes: {self.hdp_block_sizes}")
 
       # HDP-aware initialization
       block_indices = None
       q_len = 0
       
-      if self.use_hdp_attention and hasattr(self, 'hdp_block_sizes'):
+      if self.use_hdp_attention and self.hdp_block_sizes is not None:
           print(f"✅ Creating block_indices for HDP")
           q_len, p_len, e_len = self.hdp_block_sizes
           
           # Create block_indices for HDP attention mask
           block_indices = torch.cat([
-              torch. zeros(q_len, dtype=torch. long, device=self.device),
+              torch.zeros(q_len, dtype=torch.long, device=self.device),
               torch.ones(p_len, dtype=torch.long, device=self.device),
               torch.full((e_len,), 2, dtype=torch.long, device=self.device)
           ]).unsqueeze(0).repeat(n_samples, 1)
-          print(f"   block_indices. shape: {block_indices.shape}")
+          print(f"   block_indices.shape: {block_indices.shape}")
           print(f"   unique blocks: {torch.unique(block_indices).tolist()}")  
 
           # If question_tokens provided, use them as fixed context
