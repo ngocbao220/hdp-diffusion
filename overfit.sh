@@ -27,42 +27,42 @@ SEQ_LEN=$((QUESTION_LEN + PLAN_LEN + EXEC_LEN))  # 512
 # Block diffusion settings
 BLOCK_SIZE=4  # Can try 4, 8, 16
 
-# H200 Settings (optimized for dual training)
-BATCH_SIZE=8         # Increased to use more VRAM
-EVAL_BATCH_SIZE=4    # Increased proportionally
-GLOBAL_BATCH_SIZE=16    # 48 * 1 GPU * 6 = 288
-GRAD_ACCUM=2             # Balanced for speed and memory
+# H200 Settings (optimized for OVERFITTING TEST)
+BATCH_SIZE=1         # Small batch for overfitting
+EVAL_BATCH_SIZE=1    
+GLOBAL_BATCH_SIZE=1  # No gradient accumulation needed
+GRAD_ACCUM=1         
 
-# Training hyperparameters (optimized for 5 hours)
-MAX_STEPS=1000       # Reduced from 50000 for 5-hour training
-WARMUP_STEPS=50     # Reduced proportionally
-VAL_EVERY_N_EPOCH=100     # Validate every 2 epochs (less frequent)
-LOG_INTERVAL=100
+# Training hyperparameters (OVERFITTING TEST)
+MAX_STEPS=500        # 500 steps should be enough to memorize 1 sample
+WARMUP_STEPS=10      # Short warmup
+VAL_EVERY_N_EPOCH=1  # Validate every epoch (with 1 sample = every step)
+LOG_INTERVAL=10      # Log frequently to monitor overfitting
 
-# Learning rate (increased for larger batch)
-LR=1e-3  # Increased for larger batch size
+# Learning rate (can be higher for overfitting)
+LR=3e-4  # Higher LR to memorize faster
 
 # Optional: Start from pretrained checkpoint
 PRETRAIN_CKPT=null
 
 # Output directory
-OUTPUT_DIR="outputs/hdp_diffusion_h200_bs${BLOCK_SIZE}"
+OUTPUT_DIR="outputs/hdp_overfit_test"
 mkdir -p ${OUTPUT_DIR}
 
-echo "H200 Training Configuration (Dual Training Optimized):"
-echo "  GPU: 1x H200 (shared with baseline)"
+echo "H200 OVERFITTING TEST Configuration:"
+echo "  GPU: 1x H200"
+echo "  Dataset: 1 SAMPLE (gsm8k_overfit.json)"
+echo "  Goal: Verify model can memorize 1 example"
 echo "  Hierarchical Structure:"
 echo "    Question: ${QUESTION_LEN} tokens"
 echo "    Plan: ${PLAN_LEN} tokens"
 echo "    Execution: ${EXEC_LEN} tokens"
 echo "    Total: ${SEQ_LEN} tokens"
 echo "  Diffusion Block Size: ${BLOCK_SIZE}"
-echo "  Batch Size: ${BATCH_SIZE} per GPU"
-echo "  Global Batch Size: ${GLOBAL_BATCH_SIZE}"
-echo "  Gradient Accumulation: ${GRAD_ACCUM}"
+echo "  Batch Size: ${BATCH_SIZE}"
 echo "  Learning Rate: ${LR}"
 echo "  Max Steps: ${MAX_STEPS}"
-echo "  Memory: ~55-60GB VRAM (optimized)"
+echo "  Expected: Loss should drop to near 0"
 echo "  Output: ${OUTPUT_DIR}"
 echo "=========================================="
 
@@ -86,6 +86,10 @@ python -u main.py \
     loader.batch_size=${BATCH_SIZE} \
     loader.eval_batch_size=${EVAL_BATCH_SIZE} \
     loader.num_workers=16 \
+    data.hdp.use_hdp_attention=true \
+    data.hdp.question_len=${QUESTION_LEN} \
+    data.hdp.plan_len=${PLAN_LEN} \
+    data.hdp.exec_len=${EXEC_LEN} \
     optim.lr=${LR} \
     training.ema=0.9999 \
     training.resample=True \
@@ -113,20 +117,26 @@ echo "=========================================="
 echo "Training completed with exit code: ${EXIT_CODE}"
 
 if [ ${EXIT_CODE} -eq 0 ]; then
-    echo "✅ HDP-Diffusion training successful!"
+    echo "✅ Overfitting test completed!"
     echo "Checkpoints saved to: ${OUTPUT_DIR}"
     echo ""
-    echo "Fast Training on H200:"
-    echo "  Batch size 128 with 4x gradient accumulation"
-    echo "  Effective batch size: 512"
-    echo "  Completed 10K steps in ~5 hours"
+    echo "Next Steps:"
+    echo "1. Check loss curve - should drop to near 0"
+    echo "2. Run inference to verify memorization:"
     echo ""
-    echo "To evaluate:"
+    echo "bash scripts/inference/hdp.sh"
+    echo ""
+    echo "Or manually:"
     echo "python main.py mode=sample_eval \\"
     echo "    eval.checkpoint_path=${OUTPUT_DIR}/checkpoints/last.ckpt \\"
-    echo "    model=small \\"
+    echo "    model=tiny \\"
+    echo "    model.length=512 \\"
     echo "    algo=bd3lm \\"
-    echo "    data=hdp_diffusion"
+    echo "    algo.sampler=ddpm \\"
+    echo "    data=hdp_overfit \\"
+    echo "    data.hdp.use_hdp_attention=true \\"
+    echo "    sampling.num_steps=100 \\"
+    echo "    loader.eval_batch_size=1"
 else
     echo "❌ Training failed!"
     echo "Check logs: watch_folder/"
