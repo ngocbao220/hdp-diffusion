@@ -38,7 +38,7 @@ def _load_from_checkpoint(config, tokenizer):
   # 🔧 FIX: Extract vocab_size from checkpoint BEFORE creating model
   # to avoid mask_index mismatch
   import torch
-  ckpt = torch.load(config.eval.checkpoint_path, map_location='cpu')
+  ckpt = torch.load(config.eval.checkpoint_path, map_location='cpu', weights_only=False)
   if 'state_dict' in ckpt:
     # Get vocab_size from embedding layer shape
     embed_key = 'backbone.vocab_embed.embedding'
