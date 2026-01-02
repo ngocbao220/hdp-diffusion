@@ -521,6 +521,12 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     if sigma is None: t_cond = None
     else: t_cond = F.silu(self.sigma_map(sigma))
 
+    if sample_mode and hdp_mask is not None: 
+        print(f"\n🔍 DiT Backbone receiving HDP mask:")
+        print(f"   hdp_mask.shape: {hdp_mask.shape}")
+        print(f"   hdp_mask device: {hdp_mask.device}")
+        print(f"   Masked positions: {(hdp_mask == float('-inf')).sum()}")
+        
     if hdp_mask is not None:
       cross_attn = True
       mask = hdp_mask

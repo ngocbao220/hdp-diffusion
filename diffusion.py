@@ -857,13 +857,14 @@ class Diffusion(L.LightningModule):
     """Get score with optional HDP attention mask."""
     model_output = self.forward(
         x, sigma, 
+        sample_mode=True,  # ← ADD THIS!
         block_indices=block_indices
     ).to(torch.float64)
     
-    if self.config.sampling.nucleus_p == 1.0:
-        return model_output.exp()
-    model_output = model_output - model_output.logsumexp(-1, keepdim=True)
-    model_output = self._nucleus_sample(model_output. exp())
+    if self.config.sampling. nucleus_p == 1.0:
+        return model_output. exp()
+    model_output = model_output - model_output. logsumexp(-1, keepdim=True)
+    model_output = self._nucleus_sample(model_output.exp())
     return model_output
 
   def _staggered_score(self, score, dsigma):
@@ -1196,11 +1197,21 @@ class Diffusion(L.LightningModule):
       
       for i in tqdm(range(num_steps), desc='HDP Sampling' if block_indices is not None else 'Sampling'):
           t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
+          # ← ADD DEBUG: 
+          if i == 0:  # First step
+              print(f"\n🔍 First sampling step:")
+              print(f"   x.shape: {x.shape}")
+              print(f"   block_indices: {'present' if block_indices is not None else 'None'}")
+              if block_indices is not None: 
+                  print(f"   block_indices.shape: {block_indices.shape}")
+                  unique = torch.unique(block_indices)
+                  print(f"   unique blocks: {unique.tolist()}")
+
           x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
           
           # HDP:  Keep question tokens fixed after each update
           if self.use_hdp_attention and question_tokens is not None and q_len > 0:
-              x[: , :q_len] = question_tokens
+            x[: , :q_len] = question_tokens
       
       # Final denoising step
       t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
