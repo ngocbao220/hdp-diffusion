@@ -39,8 +39,8 @@ WARMUP_STEPS=10      # Short warmup
 VAL_EVERY_N_EPOCH=10  # Validate every 10 epochs (with 1 sample = every step)
 LOG_INTERVAL=10      # Log frequently to monitor overfitting
 
-# Learning rate (can be higher for overfitting)
-LR=3e-4  # Higher LR to memorize faster
+# Learning rate (LOWER to prevent collapse!)
+LR=1e-4  # Reduced from 3e-4 - model was collapsing to token 0
 
 # Optional: Start from pretrained checkpoint
 PRETRAIN_CKPT=null
