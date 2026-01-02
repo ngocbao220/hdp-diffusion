@@ -1063,11 +1063,20 @@ class Diffusion(L.LightningModule):
       print(f"   self.mask_index: {self.mask_index}")
       print(f"   First 10 i values: {i[0, :10].tolist()}")
     
+    # Create transition matrix
+    # For regular tokens: edge[i] has probability at position i
+    # For mask_index: allow transition to ANY token (uniform distribution)
     edge = torch.exp(-sigma) * F.one_hot(
       i, num_classes=self.vocab_size)
-    edge += torch.where(i == self.mask_index,
-                        1 - torch.exp(-sigma).squeeze(-1),
-                        0)[..., None]
+    
+    # Fix: When i == mask_index, set edge to ones (allow all transitions)
+    # Original code only added scalar, not broadcast across vocab
+    mask_positions = (i == self.mask_index)
+    if mask_positions.any():
+      # Set edge to 1.0 for all vocab positions when input is mask_index
+      edge[mask_positions] = torch.ones(
+        self.vocab_size, device=edge.device, dtype=edge.dtype)
+    
     return edge
 
   def _sample_t(
