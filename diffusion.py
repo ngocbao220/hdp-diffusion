@@ -1324,49 +1324,63 @@ class Diffusion(L.LightningModule):
           plan_end = q_len + p_len
           exec_start = plan_end
           
-          print(f"\n📊 HDP Sequential Denoising:")
-          print(f"   Phase 1 (steps 0-{phase1_steps}): Denoise PLAN only")
-          print(f"   Phase 2 (steps {phase1_steps}-{num_steps}): Denoise EXEC only")
+          # Determine what to denoise based on whether question is provided
+          has_question = (question_tokens is not None and q_len > 0)
+          
+          if has_question:
+              print(f"\n📊 HDP Sequential Denoising (with Question input):")
+              print(f"   Phase 1 (steps 0-{phase1_steps}): Denoise PLAN only (Question frozen)")
+              print(f"   Phase 2 (steps {phase1_steps}-{num_steps}): Denoise EXEC only (Q+Plan frozen)")
+          else:
+              print(f"\n📊 HDP Sequential Denoising (no Question input):")
+              print(f"   Phase 1 (steps 0-{phase1_steps}): Denoise QUESTION + PLAN")
+              print(f"   Phase 2 (steps {phase1_steps}-{num_steps}): Denoise EXEC (Q+Plan frozen)")
           
           # Save initial Exec state (will be frozen during Phase 1)
           x_exec_frozen = x[:, exec_start:].clone()
           
-          # ============ PHASE 1: DENOISE PLAN ============
-          print(f"\n🔵 Phase 1: Denoising Plan...")
-          for i in tqdm(range(phase1_steps), desc='Phase 1: Plan'):
+          # Save initial Question state if provided
+          if has_question:
+              x_question_frozen = question_tokens.clone()
+          
+          # ============ PHASE 1: DENOISE QUESTION + PLAN ============
+          phase1_desc = 'Phase 1: Plan' if has_question else 'Phase 1: Q+Plan'
+          print(f"\n🔵 {phase1_desc}...")
+          for i in tqdm(range(phase1_steps), desc=phase1_desc):
               t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
               
               # Denoise entire sequence (but will freeze Exec after)
               x_updated = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
               
-              # Keep Question and Exec frozen
-              if question_tokens is not None and q_len > 0:
-                  x_updated[:, :q_len] = question_tokens  # Keep Question
-              x_updated[:, exec_start:] = x_exec_frozen  # Keep Exec frozen at noise
+              # Keep Question frozen if provided, otherwise let it denoise
+              if has_question:
+                  x_updated[:, :q_len] = x_question_frozen  # Keep Question frozen
+              
+              # Always keep Exec frozen at noise
+              x_updated[:, exec_start:] = x_exec_frozen
               
               x = x_updated
           
-          # Save clean Plan state
-          x_plan_clean = x[:, plan_start:plan_end].clone()
-          print(f"✅ Phase 1 complete: Plan denoised, Exec still at noise")
+          # Save clean Question + Plan state
+          x_question_plan_clean = x[:, :exec_start].clone()  # Q + P
+          x_plan_clean = x[:, plan_start:plan_end].clone()   # P only
+          print(f"✅ Phase 1 complete: Q+Plan denoised, Exec still at noise")
           
           # ============ PHASE 2: DENOISE EXEC ============
-          print(f"\n🟢 Phase 2: Denoising Execution (conditioned on clean Plan)...")
+          print(f"\n🟢 Phase 2: Denoising Execution (conditioned on clean Q+Plan)...")
           for i in tqdm(range(phase2_steps), desc='Phase 2: Exec'):
               step_idx = phase1_steps + i
               t = timesteps[step_idx] * torch.ones(x.shape[0], 1, device=self.device)
               
-              # Denoise entire sequence (but will freeze Plan after)
+              # Denoise entire sequence (but will freeze Q+Plan after)
               x_updated = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
               
-              # Keep Question and Plan frozen at clean state
-              if question_tokens is not None and q_len > 0:
-                  x_updated[:, :q_len] = question_tokens  # Keep Question
-              x_updated[:, plan_start:plan_end] = x_plan_clean  # Keep Plan at clean state
+              # Keep Question + Plan frozen at clean state
+              x_updated[:, :exec_start] = x_question_plan_clean
               
               x = x_updated
           
-          print(f"✅ Phase 2 complete: Exec denoised (conditioned on clean Plan)")
+          print(f"✅ Phase 2 complete: Exec denoised (conditioned on clean Q+Plan)")
           
       else:
           # Standard denoising (no sequential phases)
@@ -1389,9 +1403,14 @@ class Diffusion(L.LightningModule):
       t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
       x = self._denoiser_update(x=x, t=t, block_indices=block_indices)
       
-      # Final:  ensure question is preserved
-      if self.use_hdp_attention and question_tokens is not None and q_len > 0:
-          x[:, :q_len] = question_tokens
+      # Final: preserve Question+Plan if they were frozen
+      if self.use_hdp_attention and block_indices is not None:
+          if question_tokens is not None and q_len > 0:
+              # Question was provided → keep it frozen
+              x[:, :q_len] = question_tokens
+          # Always keep Q+Plan frozen if sequential denoising was used
+          if 'x_question_plan_clean' in locals():
+              x[:, :exec_start] = x_question_plan_clean
       
       stop, x = self._check_stop_conds(x)
       if stop:

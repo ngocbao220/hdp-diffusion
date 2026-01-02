@@ -101,22 +101,29 @@ def generate_samples(config, logger, tokenizer):
 
     # Check if HDP mode with test questions
     question_tokens = None
-    if hasattr(config, 'hdp') and config.hdp. get('enabled', False):
+    if hasattr(config.data, 'hdp') and config.data.hdp.get('use_hdp_attention', False):
         logger.info('HDP mode enabled - loading test questions')
 
-        # Load test questions from dataset
-        if hasattr(config. data, 'test_path') and config.data. test_path:
+        # Determine test data path
+        test_path = None
+        if hasattr(config.data, 'test_path') and config.data.test_path:
+            test_path = config.data.test_path
+        elif config.data.valid == 'gsm8k':
+            # Use overfit data for testing
+            test_path = 'data/gsm8k/gsm8k_overfit.json'
+        
+        if test_path:
             import json
             try:
-                with open(config.data. test_path, 'r') as f:
-                    test_data = json. load(f)
+                with open(test_path, 'r') as f:
+                    test_data = json.load(f)
 
                 # Get first few questions for sampling
                 num_samples = config.sampling.num_sample_batches * config.loader.eval_batch_size
-                questions = [sample['question'] for sample in test_data[: num_samples]]
+                questions = [sample['question'] for sample in test_data[:num_samples]]
 
                 # Tokenize questions
-                q_len = config. hdp. question_len
+                q_len = config.data.hdp.question_len
                 question_tokens = tokenizer(
                     questions,
                     return_tensors='pt',
@@ -125,10 +132,13 @@ def generate_samples(config, logger, tokenizer):
                     max_length=q_len
                 )['input_ids'].to('cuda')
 
-                logger.info(f'Loaded {len(questions)} test questions for conditional generation')
+                logger.info(f'✅ Loaded {len(questions)} test questions for conditional generation')
+                logger.info(f'   Question length: {q_len} tokens')
             except Exception as e:
-                logger.warning(f'Could not load test questions:  {e}')
+                logger.warning(f'Could not load test questions: {e}')
                 logger.warning('Falling back to unconditional generation')
+        else:
+            logger.warning('No test data path configured - unconditional generation')
 
     # Generate samples
     text_samples = model.restore_model_and_sample(
