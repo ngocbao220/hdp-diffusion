@@ -365,11 +365,16 @@ class DDiTBlock(nn.Module):
 
     # get qkvs
     if mask is not None and not sample_mode:
-      qkv_x = self.get_qkv(x[:,:self.n], rotary_cos_sin)
-      qkv_x0 = self.get_qkv(x[:,self.n:], rotary_cos_sin)
-      qkv = torch.cat((qkv_x, qkv_x0), dim=1)
+        # Training with cross-attention:  split [xt | x0]
+        qkv_x = self.get_qkv(x[:, :self.n], rotary_cos_sin)
+        qkv_x0 = self. get_qkv(x[: , self.n:], rotary_cos_sin)
+        qkv = torch.cat((qkv_x, qkv_x0), dim=1)
+    elif sample_mode and mask is not None: 
+        # ✅ NEW: Sampling with HDP mask - treat as single sequence
+        qkv = self. get_qkv(x, rotary_cos_sin, store_kv=store_kv)
     else:
-      qkv = self.get_qkv(x, rotary_cos_sin, store_kv=store_kv)
+        # Standard (no mask or inference without cross-attn)
+        qkv = self.get_qkv(x, rotary_cos_sin, store_kv=store_kv)
       
     # attention
     # FIX: Nếu có mask (HDP) thì KHÔNG DÙNG flash_attn mặc định (vì nó ko hỗ trợ custom mask)
@@ -520,6 +525,13 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     x = self.vocab_embed(indices)
     if sigma is None: t_cond = None
     else: t_cond = F.silu(self.sigma_map(sigma))
+
+    # ✅ FIX: Set self.n BEFORE mask logic
+    if hasattr(self, 'block_diff_mask') or hdp_mask is not None: 
+        # For cross-attention, x is [xt | x0], so n = len(xt)
+        self.n = indices.shape[1] // 2 if not sample_mode else indices.shape[1]
+    else:
+        self.n = indices.shape[1]
 
     if sample_mode and hdp_mask is not None: 
         print(f"\n🔍 DiT Backbone receiving HDP mask:")
