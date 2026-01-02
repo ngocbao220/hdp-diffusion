@@ -1314,17 +1314,22 @@ class Diffusion(L.LightningModule):
       timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
       dt = (1 - eps) / num_steps
       
-      # HDP Sequential Denoising: Split into 2 phases
-      if self.use_hdp_attention and block_indices is not None:
-          phase1_steps = num_steps // 2  # First half: denoise Plan
-          phase2_steps = num_steps - phase1_steps  # Second half: denoise Exec
+      # ============================================================
+      # SEQUENTIAL DENOISING: DISABLED for now (train/test mismatch)
+      # TODO: Implement sequential training before enabling this
+      # ============================================================
+      USE_SEQUENTIAL_DENOISING = False  # Set to True when sequential training ready
+      
+      if USE_SEQUENTIAL_DENOISING and self.use_hdp_attention and block_indices is not None:
+          # [Sequential denoising code remains but disabled]
+          phase1_steps = num_steps // 2
+          phase2_steps = num_steps - phase1_steps
           
           q_len, p_len, e_len = self.hdp_block_sizes
           plan_start = q_len
           plan_end = q_len + p_len
           exec_start = plan_end
           
-          # Determine what to denoise based on whether question is provided
           has_question = (question_tokens is not None and q_len > 0)
           
           if has_question:
@@ -1336,81 +1341,71 @@ class Diffusion(L.LightningModule):
               print(f"   Phase 1 (steps 0-{phase1_steps}): Denoise QUESTION + PLAN")
               print(f"   Phase 2 (steps {phase1_steps}-{num_steps}): Denoise EXEC (Q+Plan frozen)")
           
-          # Save initial Exec state (will be frozen during Phase 1)
           x_exec_frozen = x[:, exec_start:].clone()
           
-          # Save initial Question state if provided
           if has_question:
               x_question_frozen = question_tokens.clone()
           
-          # ============ PHASE 1: DENOISE QUESTION + PLAN ============
           phase1_desc = 'Phase 1: Plan' if has_question else 'Phase 1: Q+Plan'
           print(f"\n🔵 {phase1_desc}...")
           for i in tqdm(range(phase1_steps), desc=phase1_desc):
               t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
-              
-              # Denoise entire sequence (but will freeze Exec after)
               x_updated = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
               
-              # Keep Question frozen if provided, otherwise let it denoise
               if has_question:
-                  x_updated[:, :q_len] = x_question_frozen  # Keep Question frozen
+                  x_updated[:, :q_len] = x_question_frozen
               
-              # Always keep Exec frozen at noise
               x_updated[:, exec_start:] = x_exec_frozen
-              
               x = x_updated
           
-          # Save clean Question + Plan state
-          x_question_plan_clean = x[:, :exec_start].clone()  # Q + P
-          x_plan_clean = x[:, plan_start:plan_end].clone()   # P only
+          x_question_plan_clean = x[:, :exec_start].clone()
+          x_plan_clean = x[:, plan_start:plan_end].clone()
           print(f"✅ Phase 1 complete: Q+Plan denoised, Exec still at noise")
           
-          # ============ PHASE 2: DENOISE EXEC ============
           print(f"\n🟢 Phase 2: Denoising Execution (conditioned on clean Q+Plan)...")
           for i in tqdm(range(phase2_steps), desc='Phase 2: Exec'):
               step_idx = phase1_steps + i
               t = timesteps[step_idx] * torch.ones(x.shape[0], 1, device=self.device)
-              
-              # Denoise entire sequence (but will freeze Q+Plan after)
               x_updated = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
-              
-              # Keep Question + Plan frozen at clean state
               x_updated[:, :exec_start] = x_question_plan_clean
-              
               x = x_updated
           
           print(f"✅ Phase 2 complete: Exec denoised (conditioned on clean Q+Plan)")
           
       else:
-          # Standard denoising (no sequential phases)
-          print(f"\n📊 Starting {num_steps} denoising steps...")
+          # ============================================================
+          # PARALLEL DENOISING (Standard - currently active)
+          # All blocks denoised simultaneously with attention mask
+          # ============================================================
+          print(f"\n📊 HDP Parallel Denoising (attention mask only):")
+          print(f"   All blocks denoised simultaneously")
+          print(f"   Hierarchy enforced by attention mask:")
+          print(f"     - Plan attends to Question only")
+          print(f"     - Exec attends to Question + Plan")
+          
           if block_indices is not None:
               print(f"   ✅ HDP mode: block_indices provided (shape={block_indices.shape})")
           else:
               print(f"   ⚠️  Standard mode: no block_indices")
           
-          for i in tqdm(range(num_steps), desc='HDP Sampling' if block_indices is not None else 'Sampling'):
+          for i in tqdm(range(num_steps), desc='HDP Parallel Sampling' if block_indices is not None else 'Sampling'):
               t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
 
               x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
               
-              # HDP:  Keep question tokens fixed after each update
-              if self.use_hdp_attention and question_tokens is not None and q_len > 0:
-                x[:, :q_len] = question_tokens
+              # Keep question tokens fixed if provided
+              if self.use_hdp_attention and question_tokens is not None:
+                  q_len = self.hdp_block_sizes[0]
+                  x[:, :q_len] = question_tokens
       
       # Final denoising step
       t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
       x = self._denoiser_update(x=x, t=t, block_indices=block_indices)
       
-      # Final: preserve Question+Plan if they were frozen
-      if self.use_hdp_attention and block_indices is not None:
-          if question_tokens is not None and q_len > 0:
-              # Question was provided → keep it frozen
-              x[:, :q_len] = question_tokens
-          # Always keep Q+Plan frozen if sequential denoising was used
-          if 'x_question_plan_clean' in locals():
-              x[:, :exec_start] = x_question_plan_clean
+      # Final: preserve Question if provided
+      if self.use_hdp_attention and question_tokens is not None:
+          q_len = self.hdp_block_sizes[0]
+          x[:, :q_len] = question_tokens
       
       stop, x = self._check_stop_conds(x)
       if stop:
