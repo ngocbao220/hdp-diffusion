@@ -38,6 +38,7 @@ def _load_from_checkpoint(config, tokenizer):
   # 🔧 FIX: Extract vocab_size from checkpoint BEFORE creating model
   # to avoid mask_index mismatch
   import torch
+  import omegaconf
   ckpt = torch.load(config.eval.checkpoint_path, map_location='cpu', weights_only=False)
   if 'state_dict' in ckpt:
     # Get vocab_size from embedding layer shape
@@ -50,7 +51,10 @@ def _load_from_checkpoint(config, tokenizer):
       # Override config vocab_size to match checkpoint
       if checkpoint_vocab_size != len(tokenizer):
         print(f"   ⚠️  MISMATCH DETECTED! Adjusting model vocab_size to {checkpoint_vocab_size}")
+        # Temporarily disable struct mode to add new key
+        omegaconf.OmegaConf.set_struct(config, False)
         config.model.vocab_size = checkpoint_vocab_size
+        omegaconf.OmegaConf.set_struct(config, True)
 
   return diffusion.Diffusion.load_from_checkpoint(
     config.eval.checkpoint_path,
