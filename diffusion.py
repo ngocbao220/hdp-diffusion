@@ -1471,6 +1471,20 @@ class Diffusion(L.LightningModule):
           else:
               print(f"   ⚠️  Standard mode: no block_indices")
           
+          # 🔍 DEBUG: Check INITIAL state before denoising loop
+          if block_indices is not None:
+              q_len, p_len, e_len = self.hdp_block_sizes
+              print(f"\n🔍 INITIAL STATE (before denoising loop):")
+              print(f"   x.shape: {x.shape}")
+              print(f"   mask_index: {self.mask_index}")
+              print(f"   First 10 Question tokens: {x[0, :10].tolist()}")
+              print(f"   First 10 Plan tokens: {x[0, q_len:q_len+10].tolist()}")
+              print(f"   First 10 Exec tokens: {x[0, q_len+p_len:q_len+p_len+10].tolist()}")
+              plan_init = x[0, q_len:q_len+p_len]
+              exec_init = x[0, q_len+p_len:]
+              print(f"   Plan mask_index count: {(plan_init == self.mask_index).sum().item()}/{p_len}")
+              print(f"   Exec mask_index count: {(exec_init == self.mask_index).sum().item()}/{e_len}")
+          
           for i in tqdm(range(num_steps), desc='HDP Parallel Sampling' if block_indices is not None else 'Sampling'):
               t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
 
