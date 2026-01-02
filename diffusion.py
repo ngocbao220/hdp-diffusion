@@ -105,7 +105,7 @@ class Diffusion(L.LightningModule):
     else:
       self.ema = None
     
-    self.var_min = self.config.algo.var_min
+    self.var_min = self.config.algo.get('var_min', False)  # Default False
     if self.var_min:
       self.register_buffer('sampling_eps_min', torch.tensor(
         self.config.training.sampling_eps_min))
@@ -371,17 +371,20 @@ class Diffusion(L.LightningModule):
         if bd3_mask is not None:
             # Ensure same device
             bd3_mask = bd3_mask.to(device)
-            
+
             # Check if shapes match
             if bd3_mask.shape[-2:] == hdp_mask.shape[-2:]:
                 # Combine masks: both must allow attention
                 # hdp_mask: 0 = allow, -inf = mask
                 # bd3_mask: True = allow, False = mask
+              
                 if bd3_mask.dtype == torch.bool:
                     bd3_bias = torch.zeros_like(hdp_mask)
                     bd3_bias = bd3_bias.masked_fill(~bd3_mask, float('-inf'))
                 else:
                     bd3_bias = bd3_mask
+                    print(f"   ❌ SHAPES MISMATCH - BD3 mask IGNORED!")
+                    print(f"   This is a BUG! HDP attention will not work correctly!")
                 
                 # Combined: take minimum (most restrictive)
                 hdp_mask = torch.minimum(hdp_mask, bd3_bias)
@@ -507,7 +510,9 @@ class Diffusion(L.LightningModule):
       
   def validation_step(self, batch, batch_idx):
     block_indices = batch.get('block_indices', None)
-    if self.var_min:
+    is_hdp = (hasattr(self.config.data, 'name') and 
+              self.config.data.name == 'hdp_diffusion')
+    if self.var_min and not is_hdp:
       for noise_clip_start in self.metrics.valid_vars.keys():
         sampling_eps_min, sampling_eps_max = noise_clip_start
         if self._check_val_sampling_intvl(sampling_eps_min, sampling_eps_max) == True:
@@ -534,7 +539,7 @@ class Diffusion(L.LightningModule):
           self.metrics.valid_vars[noise_clip_start].append(
             nlls.reshape(
               nlls.shape[0], -1, self.block_size).mean(-1))
-    elif self.block_size == 1:
+    elif self.block_size == 1 and not is_hdp:
       # nll
       losses = self._loss(batch['input_ids'],
                           batch['attention_mask'],
@@ -905,6 +910,14 @@ class Diffusion(L.LightningModule):
       block_size = self.block_size
     n = batch_dims[-1]
     num_blocks = n // block_size
+    # ← ADD CHECK:  If num_blocks is 0
+    if num_blocks == 0:
+        raise ValueError(
+            f"num_blocks = 0!  batch_dims={batch_dims}, "
+            f"block_size={block_size}, n={n}.  "
+            f"This usually happens when seq_len < block_size."
+        )
+
     _eps_b = torch.rand((batch_dims[0], num_blocks), device=device)
 
     # antithetic sampling along blocks & batches (for uniform sampling)
@@ -918,7 +931,12 @@ class Diffusion(L.LightningModule):
 
     # nll
     if sampling_eps_max >= 1 and sampling_eps_min >= 1:
-      return torch.ones_like(t)
+        t_out = torch.ones_like(t)
+        # ← ENSURE correct shape
+        assert t_out.shape == (batch_dims[0], batch_dims[-1]), \
+            f"Shape mismatch: {t_out.shape} vs expected {(batch_dims[0], batch_dims[-1])}"
+        return t_out
+    
     t = t * (sampling_eps_max - sampling_eps_min) + sampling_eps_min
     return t
 

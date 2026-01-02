@@ -303,6 +303,18 @@ def _train(config, logger, tokenizer):
 
   train_ds, valid_ds = dataloader.get_dataloaders(
     config, tokenizer)
+  print(f"\n{'='*60}")
+  print(f"DEBUG:  Dataloader Info")
+  print(f"{'='*60}")
+  print(f"Train dataloader:")
+  print(f"  - len(train_ds): {len(train_ds)}")
+  print(f"  - len(train_ds.dataset): {len(train_ds.dataset)}")
+  print(f"  - batch_size: {train_ds. batch_size}")
+  print(f"Valid dataloader:")
+  print(f"  - len(valid_ds): {len(valid_ds)}")
+  print(f"  - len(valid_ds.dataset): {len(valid_ds.dataset)}")
+  print(f"  - batch_size: {valid_ds.batch_size}")
+  print(f"{'='*60}\n")
   _print_batch(train_ds, valid_ds, tokenizer)
 
   if config.training.from_pretrained is not None and ckpt_path is None:
