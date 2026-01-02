@@ -489,6 +489,21 @@ class Diffusion(L.LightningModule):
   def training_step(self, batch, batch_idx):
     del batch_idx
     block_indices = batch.get('block_indices', None)
+    
+    # 🔍 DEBUG: Print once to verify block_indices is passed
+    if not hasattr(self, '_training_debug_printed'):
+      self._training_debug_printed = True
+      print("\n" + "="*80)
+      print("🔍 [training_step] FIRST TRAINING BATCH DEBUG")
+      print("="*80)
+      print(f"Batch keys: {batch.keys()}")
+      print(f"block_indices present: {block_indices is not None}")
+      if block_indices is not None:
+        print(f"block_indices.shape: {block_indices.shape}")
+        print(f"unique blocks: {torch.unique(block_indices).tolist()}")
+      print(f"use_hdp_attention: {self.use_hdp_attention}")
+      print("="*80 + "\n")
+    
     losses = self._loss(batch['input_ids'],
                         batch['attention_mask'],
                         block_indices=block_indices)
@@ -1095,6 +1110,22 @@ class Diffusion(L.LightningModule):
     # ⚠️ FIX: Include Question in loss with lower weight to prevent collapse
     # Without this, Question block outputs random tokens (often '!' or PAD)
     if self.use_hdp_attention and block_indices is not None:
+      # 🔍 DEBUG: Print loss masking info on first step
+      if self.training and not hasattr(self, '_loss_mask_debug_printed'):
+        self._loss_mask_debug_printed = True
+        print("\n" + "="*80)
+        print("🔍 [_loss] HDP LOSS MASKING DEBUG")
+        print("="*80)
+        print(f"block_indices.shape: {block_indices.shape}")
+        print(f"attention_mask.shape (before weighting): {attention_mask.shape}")
+        print(f"attention_mask sum by block:")
+        for block_id in range(3):
+          block_mask = (block_indices == block_id).float()
+          active_tokens = (attention_mask * block_mask).sum().item()
+          total_tokens = block_mask.sum().item()
+          print(f"  Block {block_id}: {active_tokens}/{total_tokens} tokens active")
+        print("="*80 + "\n")
+      
       # block_indices: 0=Question, 1=Plan, 2=Execution
       # Use weighted loss: Question=0.3x, Plan=1x, Exec=1x
       loss_weights = torch.ones_like(block_indices, dtype=torch.float32)
