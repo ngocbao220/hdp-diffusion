@@ -1476,14 +1476,26 @@ class Diffusion(L.LightningModule):
 
               x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
               
-              # 🔍 DEBUG: Check if Plan/Exec are stuck at mask_index
-              if i % 100 == 0 and block_indices is not None:  # Every 100 steps
+              # 🔍 DEBUG: Check Plan/Exec token distribution
+              if i % 200 == 0 and block_indices is not None:  # Every 200 steps
                   q_len, p_len, e_len = self.hdp_block_sizes
                   plan_tokens = x[0, q_len:q_len+p_len]
                   exec_tokens = x[0, q_len+p_len:]
                   plan_mask_count = (plan_tokens == self.mask_index).sum().item()
                   exec_mask_count = (exec_tokens == self.mask_index).sum().item()
-                  print(f"\n   Step {i}: Plan has {plan_mask_count}/{p_len} mask tokens, Exec has {exec_mask_count}/{e_len} mask tokens")
+                  
+                  # Count most frequent tokens
+                  unique_plan, plan_counts = torch.unique(plan_tokens, return_counts=True)
+                  unique_exec, exec_counts = torch.unique(exec_tokens, return_counts=True)
+                  top_plan_token = unique_plan[plan_counts.argmax()].item()
+                  top_exec_token = unique_exec[exec_counts.argmax()].item()
+                  
+                  print(f"\n   Step {i}:")
+                  print(f"     Plan: {plan_mask_count}/{p_len} mask_index, most common token: {top_plan_token} ({plan_counts.max().item()} times)")
+                  print(f"     Exec: {exec_mask_count}/{e_len} mask_index, most common token: {top_exec_token} ({exec_counts.max().item()} times)")
+                  if i == 0:
+                      print(f"     First 10 Plan tokens: {plan_tokens[:10].tolist()}")
+                      print(f"     First 10 Exec tokens: {exec_tokens[:10].tolist()}")
               
               # Keep question tokens fixed if provided
               if self.use_hdp_attention and question_tokens is not None:
