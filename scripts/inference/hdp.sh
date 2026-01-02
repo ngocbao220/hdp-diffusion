@@ -32,6 +32,7 @@ python -u main.py \
     algo=bd3lm \
     algo.T=1000 \
     algo.backbone=dit \
+    algo.sampler=ddpm \
     block_size=4 \
     data=hdp_overfit \
     data.hdp.use_hdp_attention=true \
