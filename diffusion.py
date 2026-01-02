@@ -397,6 +397,12 @@ class Diffusion(L.LightningModule):
 
   def forward(self, x, sigma, sample_mode=False, store_kv=False, block_indices=None):
     """Returns log score."""
+    if sample_mode: 
+        print(f"\n🔍 [Diffusion.forward] sample_mode=True")
+        print(f"   x.shape: {x.shape}")
+        print(f"   use_hdp_attention: {self.use_hdp_attention}")
+        print(f"   block_indices: {'present' if block_indices is not None else 'None'}")
+
     sigma = self._process_sigma(sigma)
     
     # Create HDP attention mask if enabled and block_indices provided
@@ -408,12 +414,21 @@ class Diffusion(L.LightningModule):
       else:
         block_indices_full = block_indices
       
+      print(f"   ✅ Creating HDP mask...")
       # Create HDP attention bias for SDPA
       hdp_mask = self._create_hdp_bd3lm_mask(
         block_indices=block_indices_full,
         seq_len=x.shape[1],
         device=x.device
       )
+      if hdp_mask is not None: 
+        print(f"   ✅ HDP mask created:  shape={hdp_mask.shape}")
+      else:
+        print(f"   ❌ HDP mask is None after creation!")
+    else:
+        print(f"   ❌ NOT creating HDP mask:")
+        print(f"      use_hdp_attention={self.use_hdp_attention}")
+        print(f"      block_indices is None={block_indices is None}")
     
     with torch.amp.autocast('cuda', dtype=torch.float32):
       if self.config.algo.name == 'bd3lm':
@@ -855,6 +870,14 @@ class Diffusion(L.LightningModule):
 
   def get_score(self, x, sigma, block_indices=None):
     """Get score with optional HDP attention mask."""
+    # ← THÊM DEBUG ĐÂY: 
+    print(f"\n🔍 [get_score] called:")
+    print(f"   x.shape: {x.shape}")
+    print(f"   block_indices: {'present' if block_indices is not None else 'None'}")
+    if block_indices is not None: 
+        print(f"   block_indices.shape: {block_indices.shape}")
+        print(f"   unique blocks: {torch.unique(block_indices).tolist()}")
+
     model_output = self.forward(
         x, sigma, 
         sample_mode=True,  # ← ADD THIS!
@@ -1147,12 +1170,19 @@ class Diffusion(L.LightningModule):
           Generated samples tensor
       """
       x = self._sample_prior(n_samples, seqlen).to(self.device)
-      
+      print(f"\n{'='*70}")
+      print(f"🔍 [_analytic_sampler] Starting sampling")
+      print(f"{'='*70}")
+      print(f"use_hdp_attention: {self.use_hdp_attention}")
+      print(f"has hdp_block_sizes: {hasattr(self, 'hdp_block_sizes')}")
+      if hasattr(self, 'hdp_block_sizes'):
+          print(f"hdp_block_sizes: {self.hdp_block_sizes}")
       # HDP-aware initialization
       block_indices = None
       q_len = 0
       
       if self.use_hdp_attention and hasattr(self, 'hdp_block_sizes'):
+          print(f"✅ Creating block_indices for HDP")
           q_len, p_len, e_len = self.hdp_block_sizes
           
           # Create block_indices for HDP attention mask
@@ -1161,7 +1191,9 @@ class Diffusion(L.LightningModule):
               torch.ones(p_len, dtype=torch.long, device=self.device),
               torch.full((e_len,), 2, dtype=torch.long, device=self.device)
           ]).unsqueeze(0).repeat(n_samples, 1)
-          
+          print(f"   block_indices. shape: {block_indices.shape}")
+          print(f"   unique blocks: {torch.unique(block_indices).tolist()}")  
+
           # If question_tokens provided, use them as fixed context
           if question_tokens is not None: 
               # Ensure correct batch size
