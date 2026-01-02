@@ -1026,6 +1026,17 @@ class Diffusion(L.LightningModule):
 
   def _transp_transition(self, i, sigma):
     sigma = _unsqueeze(sigma, reference=i[..., None])
+    
+    # Debug first call
+    if not hasattr(self, '_transp_debug_printed'):
+      self._transp_debug_printed = True
+      print(f"\n🔍 [_transp_transition] DEBUG:")
+      print(f"   i.shape: {i.shape}")
+      print(f"   i unique values: {torch.unique(i).tolist()}")
+      print(f"   self.vocab_size: {self.vocab_size}")
+      print(f"   self.mask_index: {self.mask_index}")
+      print(f"   First 10 i values: {i[0, :10].tolist()}")
+    
     edge = torch.exp(-sigma) * F.one_hot(
       i, num_classes=self.vocab_size)
     edge += torch.where(i == self.mask_index,
