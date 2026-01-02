@@ -1416,9 +1416,10 @@ class Diffusion(L.LightningModule):
     truncate_idx = None # truncate sample? (variable-length sampling only)
 
     # CRITERION 2: always stop sampling if entropy is low
-    entropy = self._compute_entropy(x[:, -256:])
-    if entropy < 4:
-      stop = True
+    # ⚠️ DISABLED for early checkpoints - entropy threshold too strict
+    # entropy = self._compute_entropy(x[:, -256:])
+    # if entropy < 4:
+    #   stop = True
 
     # for variable length sampling, check if we should stop
     # sampling, and where to truncate the sample
