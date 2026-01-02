@@ -523,7 +523,8 @@ class Diffusion(L.LightningModule):
         
         # Get model prediction at very low noise (near-deterministic)
         sigma_low = torch.full((batch['input_ids'].shape[0], 1), 0.001, device=self.device)
-        model_output = self.forward(batch['input_ids'], sigma=sigma_low, block_indices=block_indices)
+        # IMPORTANT: Set sample_mode=True to use single sequence (512 tokens), not concatenated (1024)
+        model_output = self.forward(batch['input_ids'], sigma=sigma_low, sample_mode=True, block_indices=block_indices)
         pred_tokens = model_output.argmax(dim=-1)
         
         # Compare with ground truth
