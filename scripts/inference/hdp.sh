@@ -42,6 +42,7 @@ python -u main.py \
     eval.checkpoint_path=$CHECKPOINT_PATH \
     eval.disable_ema=false \
     loader.eval_batch_size=1 \
+    sampling.num_steps=100 \
     sampling.num_sample_batches=1 \
     sampling.logdir=outputs/hdp_samples \
     wandb=null

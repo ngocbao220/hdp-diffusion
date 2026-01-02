@@ -533,7 +533,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     else:
         self.n = indices.shape[1]
 
-    # if sample_mode and hdp_mask is not None: 
+    if sample_mode and hdp_mask is not None and not hasattr(self, '_dit_debug_printed'):
+        self._dit_debug_printed = True
     #     print(f"\n🔍 DiT Backbone receiving HDP mask:")
     #     print(f"   hdp_mask.shape: {hdp_mask.shape}")
     #     print(f"   hdp_mask device: {hdp_mask.device}")
