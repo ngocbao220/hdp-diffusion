@@ -513,6 +513,45 @@ class Diffusion(L.LightningModule):
              on_step=True,
              on_epoch=False,
              sync_dist=True)
+    
+    # 🔍 DEBUG: At step 500, check if model learned anything
+    if self.global_step == 500:
+      with torch.no_grad():
+        print("\n" + "="*80)
+        print("🔍 [training_step] FINAL STEP 500 - MODEL LEARNING CHECK")
+        print("="*80)
+        
+        # Get model prediction at very low noise (near-deterministic)
+        sigma_low = torch.full((batch['input_ids'].shape[0], 1), 0.001, device=self.device)
+        model_output = self.forward(batch['input_ids'], sigma=sigma_low, block_indices=block_indices)
+        pred_tokens = model_output.argmax(dim=-1)
+        
+        # Compare with ground truth
+        gt_tokens = batch['input_ids']
+        accuracy = (pred_tokens == gt_tokens).float().mean().item()
+        
+        print(f"Token-level accuracy: {accuracy*100:.2f}%")
+        print(f"\nFirst 50 tokens comparison:")
+        print(f"Ground Truth: {gt_tokens[0, :50].tolist()}")
+        print(f"Prediction  : {pred_tokens[0, :50].tolist()}")
+        
+        # Decode to text
+        if hasattr(self, 'tokenizer'):
+          gt_text = self.tokenizer.decode(gt_tokens[0, :50])
+          pred_text = self.tokenizer.decode(pred_tokens[0, :50])
+          print(f"\nGround Truth Text: {gt_text}")
+          print(f"Prediction Text  : {pred_text}")
+        
+        # Check by block if HDP
+        if block_indices is not None:
+          print(f"\nAccuracy by block:")
+          for block_id in range(3):
+            block_mask = (block_indices == block_id)
+            block_acc = (pred_tokens[block_mask] == gt_tokens[block_mask]).float().mean().item()
+            print(f"  Block {block_id}: {block_acc*100:.2f}%")
+        
+        print("="*80 + "\n")
+    
     return losses.loss
 
   def on_validation_epoch_start(self):
