@@ -522,6 +522,7 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
       block.cache_idx = 0
 
   def forward(self, indices, sigma, sample_mode=False, store_kv=False, hdp_mask=None):
+    print(f"\n➡️ DiT Backbone forward called. sample_mode={sample_mode}, store_kv={store_kv}")
     x = self.vocab_embed(indices)
     if sigma is None: t_cond = None
     else: t_cond = F.silu(self.sigma_map(sigma))
