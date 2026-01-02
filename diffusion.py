@@ -409,11 +409,16 @@ class Diffusion(L.LightningModule):
 
   def forward(self, x, sigma, sample_mode=False, store_kv=False, block_indices=None):
     """Returns log score."""
-    if sample_mode: 
-        print(f"\n🔍 [Diffusion.forward] sample_mode=True")
+    # Only print debug info once at the start of sampling (not every step!)
+    if sample_mode and not hasattr(self, '_forward_debug_printed'): 
+        self._forward_debug_printed = True
+        print(f"\n🔍 [Diffusion.forward] First call in sample mode:")
         print(f"   x.shape: {x.shape}")
         print(f"   use_hdp_attention: {self.use_hdp_attention}")
         print(f"   block_indices: {'present' if block_indices is not None else 'None'}")
+        if block_indices is not None:
+            print(f"   block_indices.shape: {block_indices.shape}")
+            print(f"   unique blocks: {torch.unique(block_indices).tolist()}")
 
     sigma = self._process_sigma(sigma)
     
@@ -426,21 +431,15 @@ class Diffusion(L.LightningModule):
       else:
         block_indices_full = block_indices
       
-      print(f"   ✅ Creating HDP mask...")
       # Create HDP attention bias for SDPA
       hdp_mask = self._create_hdp_bd3lm_mask(
         block_indices=block_indices_full,
         seq_len=x.shape[1],
         device=x.device
       )
-      if hdp_mask is not None: 
-        print(f"   ✅ HDP mask created:  shape={hdp_mask.shape}")
-      else:
-        print(f"   ❌ HDP mask is None after creation!")
-    else:
-        print(f"   ❌ NOT creating HDP mask:")
-        print(f"      use_hdp_attention={self.use_hdp_attention}")
-        print(f"      block_indices is None={block_indices is None}")
+    elif sample_mode and not hasattr(self, '_forward_debug_printed2'):
+        self._forward_debug_printed2 = True
+        print(f"   ⚠️  HDP mask not created (missing block_indices or HDP disabled)")
     
     with torch.amp.autocast('cuda', dtype=torch.float32):
       if self.config.algo.name == 'bd3lm':
@@ -882,17 +881,9 @@ class Diffusion(L.LightningModule):
 
   def get_score(self, x, sigma, block_indices=None):
     """Get score with optional HDP attention mask."""
-    # ← THÊM DEBUG ĐÂY: 
-    print(f"\n🔍 [get_score] called:")
-    print(f"   x.shape: {x.shape}")
-    print(f"   block_indices: {'present' if block_indices is not None else 'None'}")
-    if block_indices is not None: 
-        print(f"   block_indices.shape: {block_indices.shape}")
-        print(f"   unique blocks: {torch.unique(block_indices).tolist()}")
-
     model_output = self.forward(
         x, sigma, 
-        sample_mode=True,  # ← ADD THIS!
+        sample_mode=True,
         block_indices=block_indices
     ).to(torch.float64)
     
@@ -1205,7 +1196,7 @@ class Diffusion(L.LightningModule):
         else:
             print(f"   ❌ Cannot reconstruct!  Disabling HDP attention.")
             self.use_hdp_attention = False
-            
+
       if self.use_hdp_attention: 
         self.hdp_block_sizes = (128, 128, 256)  # Hardcode for testing
         print(f"🔧 Force-set hdp_block_sizes:  {self.hdp_block_sizes}")
@@ -1260,17 +1251,14 @@ class Diffusion(L.LightningModule):
       timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
       dt = (1 - eps) / num_steps
       
+      print(f"\n📊 Starting {num_steps} denoising steps...")
+      if block_indices is not None:
+          print(f"   ✅ HDP mode: block_indices provided (shape={block_indices.shape})")
+      else:
+          print(f"   ⚠️  Standard mode: no block_indices")
+      
       for i in tqdm(range(num_steps), desc='HDP Sampling' if block_indices is not None else 'Sampling'):
           t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
-          # ← ADD DEBUG: 
-          if i == 0:  # First step
-              print(f"\n🔍 First sampling step:")
-              print(f"   x.shape: {x.shape}")
-              print(f"   block_indices: {'present' if block_indices is not None else 'None'}")
-              if block_indices is not None: 
-                  print(f"   block_indices.shape: {block_indices.shape}")
-                  unique = torch.unique(block_indices)
-                  print(f"   unique blocks: {unique.tolist()}")
 
           x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
           
