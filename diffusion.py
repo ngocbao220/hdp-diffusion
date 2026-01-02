@@ -1178,9 +1178,10 @@ class Diffusion(L.LightningModule):
       print(f"{'='*70}")
       print(f"use_hdp_attention: {self.use_hdp_attention}")
       print(f"seqlen: {seqlen}, n_samples: {n_samples}")
-      print(f"has hdp_block_sizes: {hasattr(self, 'hdp_block_sizes')}")
-      if hasattr(self, 'hdp_block_sizes') and self.hdp_block_sizes is not None:
-          print(f"hdp_block_sizes: {self.hdp_block_sizes}")
+      print(f"has hdp_block_sizes attr: {hasattr(self, 'hdp_block_sizes')}")
+      if hasattr(self, 'hdp_block_sizes'):
+          print(f"hdp_block_sizes value: {self.hdp_block_sizes}")
+          print(f"hdp_block_sizes is None: {self.hdp_block_sizes is None}")
 
       # Ensure hdp_block_sizes exists and matches seqlen
       if self.use_hdp_attention:
@@ -1204,22 +1205,31 @@ class Diffusion(L.LightningModule):
           expected_len = sum(self.hdp_block_sizes)
           if expected_len != seqlen:
             print(f"⚠️  WARNING: hdp_block_sizes sum ({expected_len}) != seqlen ({seqlen})")
-            print(f"   Adjusting block sizes proportionally to match seqlen...")
-            q_len, p_len, e_len = self.hdp_block_sizes
-            ratio = seqlen / expected_len
-            q_len = int(q_len * ratio)
-            p_len = int(p_len * ratio)
-            e_len = seqlen - q_len - p_len  # Ensure exact match
-            self.hdp_block_sizes = (q_len, p_len, e_len)
-            print(f"   ✅ Adjusted hdp_block_sizes: {self.hdp_block_sizes}")
+            if seqlen < 50:  # Too short for HDP
+              print(f"   ❌ seqlen ({seqlen}) too short for HDP! Disabling HDP attention.")
+              self.use_hdp_attention = False
+            else:
+              print(f"   Adjusting block sizes proportionally to match seqlen...")
+              q_len, p_len, e_len = self.hdp_block_sizes
+              ratio = seqlen / expected_len
+              q_len = max(1, int(q_len * ratio))  # At least 1
+              p_len = max(1, int(p_len * ratio))  # At least 1
+              e_len = max(1, seqlen - q_len - p_len)  # At least 1
+              self.hdp_block_sizes = (q_len, p_len, e_len)
+              print(f"   ✅ Adjusted hdp_block_sizes: {self.hdp_block_sizes}")
 
       # HDP-aware initialization
       block_indices = None
       q_len = 0
       
+      print(f"\n🔍 About to create block_indices:")
+      print(f"   use_hdp_attention: {self.use_hdp_attention}")
+      print(f"   hdp_block_sizes: {self.hdp_block_sizes if hasattr(self, 'hdp_block_sizes') else 'N/A'}")
+      
       if self.use_hdp_attention and self.hdp_block_sizes is not None:
           print(f"✅ Creating block_indices for HDP")
           q_len, p_len, e_len = self.hdp_block_sizes
+          print(f"   Block sizes: q={q_len}, p={p_len}, e={e_len}")
           
           # Create block_indices for HDP attention mask
           block_indices = torch.cat([
@@ -1227,8 +1237,14 @@ class Diffusion(L.LightningModule):
               torch.ones(p_len, dtype=torch.long, device=self.device),
               torch.full((e_len,), 2, dtype=torch.long, device=self.device)
           ]).unsqueeze(0).repeat(n_samples, 1)
-          print(f"   block_indices.shape: {block_indices.shape}")
-          print(f"   unique blocks: {torch.unique(block_indices).tolist()}")  
+          print(f"   ✅ block_indices.shape: {block_indices.shape}")
+          print(f"   ✅ unique blocks: {torch.unique(block_indices).tolist()}")
+      else:
+          print(f"❌ NOT creating block_indices!")
+          if not self.use_hdp_attention:
+              print(f"   Reason: use_hdp_attention=False")
+          elif self.hdp_block_sizes is None:
+              print(f"   Reason: hdp_block_sizes is None")  
 
           # If question_tokens provided, use them as fixed context
           if question_tokens is not None: 
