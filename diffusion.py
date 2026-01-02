@@ -119,14 +119,26 @@ class Diffusion(L.LightningModule):
     
     # HDP attention configuration
     self.use_hdp_attention = False
+    self.hdp_block_sizes = None
+
     if hasattr(self.config, 'data') and hasattr(self.config.data, 'hdp'):
+      hdp_config = self.config.data.hdp
       self.use_hdp_attention = self.config.data.hdp.get('use_hdp_attention', False)
+
       if self.use_hdp_attention:
+        q_len = hdp_config.get('question_len', 128)
+        p_len = hdp_config.get('plan_len', 128)
+        e_len = hdp_config. get('exec_len', 256)
+
         self.hdp_block_sizes = (
-          self.config.data.hdp.question_len,
-          self.config.data.hdp.plan_len,
-          self.config.data.hdp.exec_len
+          q_len,  # Question block
+          p_len,  # Plan block
+          e_len   # Execution block
         )
+        
+        print(f"✅ HDP Attention enabled with block sizes: {self.hdp_block_sizes}")
+        print(f"   Question:  {q_len}, Plan: {p_len}, Execution: {e_len}")
+        print(f"   Total seq length: {sum(self.hdp_block_sizes)}")
         print(f"✅ HDP Attention enabled with block sizes: {self.hdp_block_sizes}")
     
     self._validate_configuration()
@@ -1177,6 +1189,22 @@ class Diffusion(L.LightningModule):
       print(f"has hdp_block_sizes: {hasattr(self, 'hdp_block_sizes')}")
       if hasattr(self, 'hdp_block_sizes'):
           print(f"hdp_block_sizes: {self.hdp_block_sizes}")
+
+      if self.use_hdp_attention and not hasattr(self, 'hdp_block_sizes'):
+        print(f"⚠️  WARNING: use_hdp_attention=True but hdp_block_sizes not found!")
+        print(f"   Attempting to reconstruct from config...")
+        
+        if hasattr(self. config, 'data') and hasattr(self.config.data, 'hdp'):
+            self.hdp_block_sizes = (
+                self.config.data.hdp.question_len,
+                self.config.data. hdp.plan_len,
+                self.config.data.hdp.exec_len
+            )
+            print(f"   ✅ Reconstructed hdp_block_sizes: {self.hdp_block_sizes}")
+        else:
+            print(f"   ❌ Cannot reconstruct!  Disabling HDP attention.")
+            self.use_hdp_attention = False
+
       # HDP-aware initialization
       block_indices = None
       q_len = 0
