@@ -158,77 +158,94 @@ def generate_samples(config, logger, tokenizer):
     return text_samples
 
 def _display_hdp_samples(samples, validation_data, tokenizer):
-  """Display HDP samples with question context."""
-  print("\n" + "="*100)
-  print("HDP-DIFFUSION SAMPLES WITH QUESTION CONTEXT")
-  print("="*100)
+    """Display HDP samples with question context, clearly separating [PLAN], [EXECUTION], [ANSWER]."""
+    print("\n" + "="*100)
+    print("HDP-DIFFUSION SAMPLES WITH QUESTION CONTEXT")
+    print("="*100)
 
-  for idx, sample_text in enumerate(samples[:5]):  # Show first 5 samples
-    truth = validation_data[idx] if idx < len(validation_data) else None
+    for idx, sample_text in enumerate(samples[:5]):  # Show first 5 samples
+        truth = validation_data[idx] if idx < len(validation_data) else None
 
-    # Parse sample
-    plan_marker = "[PLAN]"
-    exec_marker = "[EXECUTION]"
+        plan_marker = "[PLAN]"
+        exec_marker = "[EXECUTION]"
+        answer_marker = "[ANSWER]"
+        question = truth['question'] if truth else "N/A"
 
-    question = truth['question'] if truth else "N/A"
+        print(f"\n{'─'*100}")
+        print(f"📊 SAMPLE #{idx + 1}")
+        print(f"{'─'*100}")
+        print(f"\n🔍 RAW GENERATED TEXT (first 500 chars):")
+        print(f"   {repr(sample_text[:500])}")
 
-    # Show raw sample for debugging
-    print(f"\n{'─'*100}")
-    print(f"📊 SAMPLE #{idx + 1}")
-    print(f"{'─'*100}")
-    print(f"\n🔍 RAW GENERATED TEXT (first 500 chars):")
-    print(f"   {repr(sample_text[:500])}")
+        # Extract PLAN, EXECUTION, ANSWER
+        plan = ""
+        execution = ""
+        answer = ""
+        has_plan_marker = plan_marker in sample_text
+        has_exec_marker = exec_marker in sample_text
+        has_answer_marker = answer_marker in sample_text
 
-    if plan_marker in sample_text and exec_marker in sample_text:
-      _, rest = sample_text.split(plan_marker, 1)
-      plan_part, exec_part = rest.split(exec_marker, 1)
-      plan = plan_part.strip()
-      execution = exec_part.strip()
-    else:
-      # Try to parse by position if markers not found
-      plan = "[Markers not found - Model may not have learned format]"
-      execution = "[Markers not found - Model may not have learned format]"
+        if has_plan_marker and has_exec_marker:
+            _, rest = sample_text.split(plan_marker, 1)
+            plan_part, exec_rest = rest.split(exec_marker, 1)
+            plan = plan_part.strip()
+            # Try to extract [ANSWER] from execution part
+            if answer_marker in exec_rest:
+                exec_part, ans_part = exec_rest.split(answer_marker, 1)
+                execution = exec_part.strip()
+                answer = ans_part.strip()
+            else:
+                execution = exec_rest.strip()
+                answer = "[Not found in output]"
+        else:
+            # Try to extract by block position if markers not found
+            plan = "[Markers not found - Model may not have learned format]"
+            execution = "[Markers not found - Model may not have learned format]"
+            answer = "[Markers not found - Model may not have learned format]"
+            try:
+                tokens = tokenizer.encode(sample_text)
+                if len(tokens) >= 384:
+                    # Assume: tokens[0:128]=question, [128:256]=plan, [256:384]=execution, [384:]=answer
+                    plan_tokens = tokens[128:256]
+                    exec_tokens = tokens[256:384]
+                    ans_tokens = tokens[384:]
+                    plan = tokenizer.decode(plan_tokens).strip()
+                    execution = tokenizer.decode(exec_tokens).strip()
+                    answer = tokenizer.decode(ans_tokens).strip() if ans_tokens else "[Not found in output]"
+                elif len(tokens) >= 256:
+                    plan_tokens = tokens[128:256]
+                    exec_tokens = tokens[256:]
+                    plan = tokenizer.decode(plan_tokens).strip()
+                    execution = tokenizer.decode(exec_tokens).strip()
+                    answer = "[Not found in output]"
+            except Exception:
+                pass
 
-      # Try to extract by counting tokens (128, 128, 256 blocks)
-      try:
-        tokens = tokenizer.encode(sample_text)
-        if len(tokens) >= 256:
-          # Assume: tokens[0:128] = question, [128:256] = plan, [256:] = execution
-          plan_tokens = tokens[128:256]
-          exec_tokens = tokens[256:]
-          plan = tokenizer.decode(plan_tokens).strip()
-          execution = tokenizer.decode(exec_tokens).strip()
-      except:
-        pass
+        # Clean padding
+        plan = plan.replace(tokenizer.eos_token, '').strip()
+        execution = execution.replace(tokenizer.eos_token, '').strip()
+        answer = answer.replace(tokenizer.eos_token, '').strip()
 
-    # Clean padding
-    plan = plan.replace(tokenizer.eos_token, '').strip()
-    execution = execution.replace(tokenizer.eos_token, '').strip()
+        print(f"\n📋 QUESTION (from validation set):\n   {question}")
+        print(f"\n🧠 [PLAN]:\n   {plan}")
+        print(f"\n🔢 [EXECUTION]:\n   {execution}")
+        print(f"\n✅ [ANSWER]:\n   {answer}")
 
-    print(f"\n📋 QUESTION (from validation set):")
-    print(f"   {question}")
-    print(f"\n🧠 GENERATED PLAN:")
-    print(f"   {plan}")
-    print(f"\n🔢 GENERATED EXECUTION:")
-    print(f"   {execution}")
+        if truth:
+            print(f"\n🏷️  GROUND TRUTH:")
+            print(f"   [PLAN]: {truth['plan']}")
+            print(f"   [EXECUTION]: {truth['execution']}")
+            print(f"   [ANSWER]: {truth.get('answer', 'N/A')}")
 
-    if truth:
-      print(f"\n✅ GROUND TRUTH:")
-      print(f"   Plan: {truth['plan']}")
-      print(f"   Execution: {truth['execution']} [ANSWER] {truth.get('answer', 'N/A')}")
+        print(f"\n📈 FORMAT ANALYSIS:")
+        print(f"   [PLAN] marker found: {'✅' if has_plan_marker else '❌'}")
+        print(f"   [EXECUTION] marker found: {'✅' if has_exec_marker else '❌'}")
+        print(f"   [ANSWER] marker found: {'✅' if has_answer_marker else '❌'}")
+        if not (has_plan_marker and has_exec_marker):
+            print(f"   ⚠️  Model has not learned the hierarchical format yet!")
+            print(f"   💡 Suggestion: Train longer or check if training data has [PLAN]/[EXECUTION]/[ANSWER] markers")
 
-    # Analysis
-    has_plan_marker = plan_marker in sample_text
-    has_exec_marker = exec_marker in sample_text
-    print(f"\n📈 FORMAT ANALYSIS:")
-    print(f"   [PLAN] marker found: {'✅' if has_plan_marker else '❌'}")
-    print(f"   [EXECUTION] marker found: {'✅' if has_exec_marker else '❌'}")
-
-    if not (has_plan_marker and has_exec_marker):
-      print(f"   ⚠️  Model has not learned the hierarchical format yet!")
-      print(f"   💡 Suggestion: Train longer or check if training data has [PLAN]/[EXECUTION] markers")
-
-  print("\n" + "="*100 + "\n")
+    print("\n" + "="*100 + "\n")
 
 def _ppl_eval(config, logger, tokenizer):
   logger.info('Starting Eval.')
@@ -323,8 +340,7 @@ def _train(config, logger, tokenizer):
 
   trainer.fit(model, train_ds, valid_ds, ckpt_path=ckpt_path)
 
-@hydra.main(version_base=None, config_path='configs',
-            config_name='config')
+@hydra.main(version_base=None, config_path='configs', config_name='config')
 def main(config):
   """Main entry point for training."""
   L.seed_everything(config.seed)
@@ -335,7 +351,24 @@ def main(config):
 
   if config.mode == 'sample_eval':
     config.wandb = None
+    # 1. Sinh ra các mẫu văn bản
     samples = generate_samples(config, logger, tokenizer)
+
+    # 2. Tải dữ liệu gốc (Ground Truth) để so sánh (nếu có)
+    # Phần này mô phỏng logic đọc file giống trong generate_samples
+    validation_data = []
+    if hasattr(config, 'data') and hasattr(config.data, 'test_path') and config.data.test_path:
+        import json
+        try:
+            with open(config.data.test_path, 'r') as f:
+                validation_data = json.load(f)
+            logger.info(f"Loaded {len(validation_data)} validation samples for display comparison.")
+        except Exception as e:
+            logger.warning(f"Could not load validation data for display: {e}")
+    
+    # 3. Gọi hàm hiển thị format HDP
+    _display_hdp_samples(samples, validation_data, tokenizer)
+
   elif config.mode == 'ppl_eval':
     config.wandb = None
     _ppl_eval(config, logger, tokenizer)

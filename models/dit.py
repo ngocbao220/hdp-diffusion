@@ -188,7 +188,11 @@ def apply_rotary_pos_emb_torchscript(qkv, cos, sin):
 def apply_rotary_pos_emb(qkv, cos, sin):
   cos = cos[0,:,0,0,:cos.shape[-1]//2]
   sin = sin[0,:,0,0,:sin.shape[-1]//2]
-  return flash_attn.layers.rotary.apply_rotary_emb_qkv_(qkv, cos, sin)
+  try:
+    return flash_attn.layers.rotary.apply_rotary_emb_qkv_(qkv, cos, sin)
+  except (NameError, AttributeError):
+    # Fallback to torchscript version if flash_attn not available
+    return apply_rotary_pos_emb_torchscript(qkv, cos, sin)
 
 
 def regular_attention_multi_headed(q, k, v):

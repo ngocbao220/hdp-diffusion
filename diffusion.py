@@ -372,17 +372,20 @@ class Diffusion(L.LightningModule):
             # Ensure same device
             bd3_mask = bd3_mask.to(device)
             
-            # Combine masks:  both must allow attention
-            # hdp_mask:  0 = allow, -inf = mask
-            # bd3_mask: True = allow, False = mask
-            if bd3_mask.dtype == torch.bool:
-                bd3_bias = torch.zeros_like(hdp_mask)
-                bd3_bias = bd3_bias. masked_fill(~bd3_mask, float('-inf'))
-            else:
-                bd3_bias = bd3_mask
-            
-            # Combined:  take minimum (most restrictive)
-            hdp_mask = torch.minimum(hdp_mask, bd3_bias)
+            # Check if shapes match
+            if bd3_mask.shape[-2:] == hdp_mask.shape[-2:]:
+                # Combine masks: both must allow attention
+                # hdp_mask: 0 = allow, -inf = mask
+                # bd3_mask: True = allow, False = mask
+                if bd3_mask.dtype == torch.bool:
+                    bd3_bias = torch.zeros_like(hdp_mask)
+                    bd3_bias = bd3_bias.masked_fill(~bd3_mask, float('-inf'))
+                else:
+                    bd3_bias = bd3_mask
+                
+                # Combined: take minimum (most restrictive)
+                hdp_mask = torch.minimum(hdp_mask, bd3_bias)
+            # else: shapes don't match, skip BD3 mask combination
     
     # Add head dimension:  (batch, seq, seq) -> (batch, 1, seq, seq)
     hdp_mask = hdp_mask.unsqueeze(1)
