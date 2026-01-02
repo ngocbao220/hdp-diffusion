@@ -1191,10 +1191,6 @@ class Diffusion(L.LightningModule):
       if hasattr(self, 'hdp_block_sizes'):
           print(f"hdp_block_sizes: {self.hdp_block_sizes}")
 
-      if self.use_hdp_attention: 
-        self.hdp_block_sizes = (128, 128, 256)  # Hardcode for testing
-        print(f"🔧 Force-set hdp_block_sizes:  {self.hdp_block_sizes}")
-
       if self.use_hdp_attention and not hasattr(self, 'hdp_block_sizes'):
         print(f"⚠️  WARNING: use_hdp_attention=True but hdp_block_sizes not found!")
         print(f"   Attempting to reconstruct from config...")
@@ -1209,6 +1205,10 @@ class Diffusion(L.LightningModule):
         else:
             print(f"   ❌ Cannot reconstruct!  Disabling HDP attention.")
             self.use_hdp_attention = False
+            
+      if self.use_hdp_attention: 
+        self.hdp_block_sizes = (128, 128, 256)  # Hardcode for testing
+        print(f"🔧 Force-set hdp_block_sizes:  {self.hdp_block_sizes}")
 
       # HDP-aware initialization
       block_indices = None
