@@ -542,8 +542,14 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     if hdp_mask is not None:
       cross_attn = True
       mask = hdp_mask
-      self.n = x.shape[1] // 2
-      rotary_cos_sin = self.rotary_emb(x[:, :self.n])
+      # FIX: In sampling mode, x is single sequence, not [xt | x0] concatenated
+      if sample_mode:
+        self.n = x.shape[1]
+        rotary_cos_sin = self.rotary_emb(x)
+      else:
+        # Training mode: x is [xt | x0] concatenated
+        self.n = x.shape[1] // 2
+        rotary_cos_sin = self.rotary_emb(x[:, :self.n])
     else:
       cross_attn = hasattr(self, 'block_diff_mask')
       if cross_attn:
