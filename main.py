@@ -35,8 +35,20 @@ def _load_from_checkpoint(config, tokenizer):
     return diffusion.Diffusion(
       config, tokenizer=tokenizer).to('cuda')
 
-  # 🔧 FIX: Extract vocab_size from checkpoint BEFORE creating model
-  # to avoid mask_index mismatch
+  # 🔧 FIX: Add special tokens to tokenizer to match training
+  # Training adds: [PAD], [PLAN], [EXECUTION], [ANSWER]
+  # This increases vocab from 50257 → 50261
+  if not tokenizer.pad_token:
+    tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+  
+  special_tokens_dict = {'additional_special_tokens': ['[PLAN]', '[EXECUTION]', '[ANSWER]']}
+  num_added = tokenizer.add_special_tokens(special_tokens_dict)
+  
+  print(f"\n🔧 Added {num_added} special tokens to tokenizer")
+  print(f"   New tokenizer vocab_size: {len(tokenizer)}")
+  print(f"   Special tokens: [PAD]={tokenizer.pad_token_id}, [PLAN]={tokenizer.additional_special_tokens_ids[0]}, [EXECUTION]={tokenizer.additional_special_tokens_ids[1]}, [ANSWER]={tokenizer.additional_special_tokens_ids[2]}")
+
+  # Extract vocab_size from checkpoint BEFORE creating model
   import torch
   import omegaconf
   ckpt = torch.load(config.eval.checkpoint_path, map_location='cpu', weights_only=False)
