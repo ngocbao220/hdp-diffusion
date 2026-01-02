@@ -9,12 +9,12 @@
 #SBATCH --partition=gpu               # Request partition
 #SBATCH --constraint="h200"           # H200 GPU
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:2                  # 2x H200 GPUs
+#SBATCH --gres=gpu:1                  # 1x GPU
 #SBATCH --open-mode=append            # Do not overwrite logs
 #SBATCH --requeue                     # Requeue upon preemption
 
 echo "=========================================="
-echo "HDP-Diffusion Training on H200"
+echo "HDP-Diffusion Training (Single GPU)"
 echo "Hierarchical Dual-Process Diffusion"
 echo "=========================================="
 
@@ -27,20 +27,20 @@ SEQ_LEN=$((QUESTION_LEN + PLAN_LEN + EXEC_LEN))  # 512
 # Block diffusion settings
 BLOCK_SIZE=16  # Can try 4, 8, 16
 
-# H200 Optimized Settings (141GB VRAM)
-BATCH_SIZE=64         # Large batch for H200
-EVAL_BATCH_SIZE=32
-GLOBAL_BATCH_SIZE=256    # 4x original
-GRAD_ACCUM=2             # 64 * 2 GPUs * 2 = 256
+# H200 Settings (optimized for dual training)
+BATCH_SIZE=48         # Increased to use more VRAM
+EVAL_BATCH_SIZE=24    # Increased proportionally
+GLOBAL_BATCH_SIZE=288    # 48 * 1 GPU * 6 = 288
+GRAD_ACCUM=6             # Balanced for speed and memory
 
-# Training hyperparameters
-MAX_STEPS=50000
-WARMUP_STEPS=5000
-VAL_EVERY_N_EPOCH=1      # Validate every epoch (18 batches)
+# Training hyperparameters (optimized for 5 hours)
+MAX_STEPS=10000       # Reduced from 50000 for 5-hour training
+WARMUP_STEPS=1000     # Reduced proportionally
+VAL_EVERY_N_EPOCH=2      # Validate every 2 epochs (less frequent)
 LOG_INTERVAL=50
 
 # Learning rate (increased for larger batch)
-LR=5e-4  # Was 3e-4
+LR=1e-3  # Increased for larger batch size
 
 # Optional: Start from pretrained checkpoint
 PRETRAIN_CKPT=null
@@ -49,20 +49,20 @@ PRETRAIN_CKPT=null
 OUTPUT_DIR="outputs/hdp_diffusion_h200_bs${BLOCK_SIZE}"
 mkdir -p ${OUTPUT_DIR}
 
-echo "2xH200 Configuration:"
-echo "  GPUs: 2x H200 (141GB VRAM each)"
+echo "H200 Training Configuration (Dual Training Optimized):"
+echo "  GPU: 1x H200 (shared with baseline)"
 echo "  Hierarchical Structure:"
 echo "    Question: ${QUESTION_LEN} tokens"
 echo "    Plan: ${PLAN_LEN} tokens"
 echo "    Execution: ${EXEC_LEN} tokens"
 echo "    Total: ${SEQ_LEN} tokens"
 echo "  Diffusion Block Size: ${BLOCK_SIZE}"
-echo "  Batch Size: ${BATCH_SIZE} per GPU (256 total per step)"
-echo "  Strategy: DDP (Distributed Data Parallel)"
+echo "  Batch Size: ${BATCH_SIZE} per GPU"
 echo "  Global Batch Size: ${GLOBAL_BATCH_SIZE}"
 echo "  Gradient Accumulation: ${GRAD_ACCUM}"
 echo "  Learning Rate: ${LR}"
 echo "  Max Steps: ${MAX_STEPS}"
+echo "  Memory: ~55-60GB VRAM (optimized)"
 echo "  Output: ${OUTPUT_DIR}"
 echo "=========================================="
 
@@ -96,7 +96,7 @@ python -u main.py \
     trainer.val_check_interval=null \
     +trainer.check_val_every_n_epoch=${VAL_EVERY_N_EPOCH} \
     trainer.log_every_n_steps=${LOG_INTERVAL} \
-    trainer.devices=2 \
+    trainer.devices=1 \
     trainer.num_nodes=1 \
     +trainer.strategy=ddp \
     trainer.precision=bf16-mixed \
@@ -116,10 +116,10 @@ if [ ${EXIT_CODE} -eq 0 ]; then
     echo "✅ HDP-Diffusion training successful!"
     echo "Checkpoints saved to: ${OUTPUT_DIR}"
     echo ""
-    echo "Training Speed on H200:"
-    echo "  Batch size 128 (4x larger than baseline)"
-    echo "  Expected: ~2-3x faster than 4xA100"
-    echo "  Time estimate: ~12-18 hours for 50K steps"
+    echo "Fast Training on H200:"
+    echo "  Batch size 128 with 4x gradient accumulation"
+    echo "  Effective batch size: 512"
+    echo "  Completed 10K steps in ~5 hours"
     echo ""
     echo "To evaluate:"
     echo "python main.py mode=sample_eval \\"

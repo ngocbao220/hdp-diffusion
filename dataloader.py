@@ -325,18 +325,18 @@ def get_dataset(
   else:
     filename = f'{dataset_name}_{mode}_bs{block_size}_unwrapped{eos_tag}.dat'
   _path = os.path.join(cache_dir, filename)
-  
+
   if utils.fsspec_exists(_path):
     LOGGER.info(f'Loading data from: {_path}')
     return datasets.load_from_disk(_path).with_format('torch')
   LOGGER.info(f'Generating new data at: {_path}')
-  LOGGER.info(f'{streaming=}')  
+  LOGGER.info(f'{streaming=}')
 
   crop_train = dataset_name == 'text8-crop'
   if mode == 'train' and crop_train:
     # double block size for sub-sampling
     block_size *= 2
-  
+
   if dataset_name == 'wikitext103':
     dataset = datasets.load_dataset(
       'wikitext',
@@ -451,7 +451,7 @@ def get_dataset(
         text[i] = detokenizer(t)
       return text
     return detok
-  
+
   EOS = tokenizer.encode(tokenizer.eos_token)[0]
   BOS = tokenizer.encode(tokenizer.bos_token)[0]
 
@@ -462,11 +462,11 @@ def get_dataset(
       text = example['article']
     elif dataset_name == 'gsm8k':
       # Combine question and answer into single text
-      text = [f"Question: {q}\nAnswer: {a}" 
+      text = [f"Question: {q}\nAnswer: {a}"
               for q, a in zip(example['question'], example['answer'])]
     else:
       text = example['text']
-    
+
     if detokenizer is not None:
       text = _apply_detokenizer(detokenizer)(text)
 
@@ -583,11 +583,11 @@ def get_tokenizer(config):
     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
   return tokenizer
-    
+
 
 def get_dataloaders(config, tokenizer, skip_train=False,
                     skip_valid=False, valid_seed=None):
-  num_gpus = torch.cuda.device_count()
+  num_gpus = config.trainer.devices if hasattr(config.trainer, 'devices') else torch.cuda.device_count()
   if config.trainer.accumulate_grad_batches > 1:
     assert (config.loader.global_batch_size
             == (config.loader.batch_size
@@ -618,29 +618,29 @@ def get_dataloaders(config, tokenizer, skip_train=False,
              (hasattr(config.data, 'train') and config.data.train == 'hdp_diffusion')
     if is_hdp:
         LOGGER.info("Loading HDP-Diffusion dataset")
-        
+
         # Get block sizes from config
         hdp_config = config.data.hdp
         block_sizes = (
             hdp_config.question_len,
-            hdp_config.plan_len, 
+            hdp_config.plan_len,
             hdp_config.exec_len
         )
-        
+
         train_dataset = HDPDataset(
             data_path=config.data.train_path,
             tokenizer=tokenizer,
             block_sizes=block_sizes,
             use_special_format=hdp_config.get('use_special_format', True)
         )
-        
+
         valid_dataset = HDPDataset(
             data_path=config.data.test_path,
             tokenizer=tokenizer,
             block_sizes=block_sizes,
             use_special_format=hdp_config.get('use_special_format', True)
         )
-        
+
         train_dataloader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=config.loader.batch_size,
@@ -649,7 +649,7 @@ def get_dataloaders(config, tokenizer, skip_train=False,
             pin_memory=config.loader.pin_memory,
             collate_fn=collate_hdp_batch
         )
-        
+
         valid_dataloader = torch.utils.data.DataLoader(
             valid_dataset,
             batch_size=config.loader.eval_batch_size,
@@ -658,10 +658,10 @@ def get_dataloaders(config, tokenizer, skip_train=False,
             pin_memory=config.loader.pin_memory,
             collate_fn=collate_hdp_batch
         )
-        
+
         # Attach tokenizer for compatibility
         valid_dataloader.tokenizer = tokenizer
-        
+
         return train_dataloader, valid_dataloader
     else:
       train_set = get_dataset(

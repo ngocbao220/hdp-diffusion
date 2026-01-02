@@ -1,5 +1,6 @@
 import itertools
 from dataclasses import dataclass
+import logging
 
 import hydra.utils
 import lightning as L
@@ -18,6 +19,8 @@ import utils
 import numpy as np
 import itertools
 from models.hdp_attention_mask import get_hdp_attention_bias
+
+LOGGER = logging.getLogger(__name__)
 
 def _sample_categorical(categorical_probs):
   gumbel_norm = (1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log())
@@ -144,9 +147,12 @@ class Diffusion(L.LightningModule):
         self._restarting_skip_val_flag = False
 
   def _validate_configuration(self):
+    # For sample_eval mode with first_hitting, check batch size only if not HDP
+    is_hdp = (hasattr(self.config.data, 'name') and self.config.data.name == 'hdp_diffusion')
     if self.config.mode == 'sample_eval' and \
         hasattr(self.config.sampling, 'first_hitting') and \
-        self.config.sampling.first_hitting:
+        self.config.sampling.first_hitting and \
+        not is_hdp:
       assert self.config.loader.eval_batch_size == 1
     assert self.config.algo.backbone in {
       'dit', 'ar', 'hf_dit'}
@@ -389,7 +395,7 @@ class Diffusion(L.LightningModule):
     
     # Create HDP attention mask if enabled and block_indices provided
     hdp_mask = None
-    if self.use_hdp_attention and block_indices is not None and not sample_mode:
+    if self.use_hdp_attention and block_indices is not None:
       # For BD3-LM cross attention, x is concatenated (xt, x0), so block_indices needs to be duplicated
       if self.cross_attn and x.shape[1] == block_indices.shape[1] * 2:
         block_indices_full = torch.cat((block_indices, block_indices), dim=1)
@@ -724,99 +730,132 @@ class Diffusion(L.LightningModule):
         # check if we need to resample (or stop sampling for variable-length sampling)
         if (i+1) > 256:
           stop, x_out = self._check_stop_conds(x[:, :i+1])
-          if stop:
+          if stop and self.config.sampling.var_length:
+            # For variable-length sampling, use truncated output
             x = x_out
-        if (stop and not self.config.sampling.var_length) \
-          or (stop and x.shape[-1] == 1):
-          return None
-        elif stop:
-          break
+            break
+          # For fixed-length sampling, continue even if stop conditions met
         x[:, i + 1] = y
       return x
   
   @torch.no_grad()
   def _sample(
-    self, seqlen=None, num_steps=None, eps=1e-5, batch_size_per_gpu=None):
-    """Generate samples from the model."""
-    if seqlen is None:
-      seqlen = self.config.model.length
-    if batch_size_per_gpu is None:
-      batch_size_per_gpu = self.config.loader.eval_batch_size
-    samples = []
-    if self.parameterization == 'ar':
-      for _ in range(self.config.sampling.num_sample_batches):
-        sample_i, num_tries = None, 0
-        while sample_i is None:
-          num_tries += 1
-          sample_i = self._ar_sampler(batch_size_per_gpu)
-          if num_tries > 10:
-            raise ValueError('Sampling failed.')
-        samples.append(sample_i)
-        self.metrics.gen_nfes.append(self.config.model.length)
+      self, seqlen=None, num_steps=None, eps=1e-5, 
+      batch_size_per_gpu=None, question_tokens=None
+  ):
+      """Generate samples from the model. 
+      
+      Args: 
+          seqlen: Sequence length
+          num_steps:  Number of denoising steps
+          eps:  Minimum noise level
+          batch_size_per_gpu:  Batch size per GPU
+          question_tokens:  (batch, q_len) - Optional question tokens for HDP conditional generation
+      
+      Returns:
+          List of decoded text samples
+      """
+      if seqlen is None:
+          seqlen = self.config.model.length
+      if batch_size_per_gpu is None: 
+          batch_size_per_gpu = self.config.loader.eval_batch_size
+      samples = []
+      
+      if self.parameterization == 'ar':
+          for _ in range(self.config.sampling.num_sample_batches):
+              sample_i, num_tries = None, 0
+              while sample_i is None:
+                  num_tries += 1
+                  sample_i = self._ar_sampler(batch_size_per_gpu)
+                  if num_tries > 10: 
+                      raise ValueError('Sampling failed.')
+              samples.append(sample_i)
+              self.metrics.gen_nfes. append(self.config.model.length)
+          samples = torch.cat(samples, dim=0) 
+          return self. tokenizer.batch_decode(samples)
+      
+      if self.sampler == 'semi_ar':
+          for _ in range(self.config.sampling. num_sample_batches):
+              sample_i, num_tries = None, 0
+              while sample_i is None: 
+                  num_tries += 1
+                  sample_i, nfes = self._semi_ar_sampler(
+                      n_samples=batch_size_per_gpu,
+                      num_strides=(seqlen // self.block_size), 
+                      num_steps=num_steps,
+                      seqlen=seqlen)
+                  if num_tries > 10:
+                      raise ValueError('Sampling failed.')
+              samples.append(sample_i)
+              self.metrics.nfes.update(nfes)
+              self.metrics.gen_nfes. append(nfes)
+      else:
+          nfes = num_steps
+          for _ in range(self.config.sampling. num_sample_batches):
+              sample_i, num_tries = None, 0
+              while sample_i is None: 
+                  sample_i = self._analytic_sampler(
+                      n_samples=batch_size_per_gpu,
+                      num_steps=num_steps,
+                      seqlen=seqlen,
+                      eps=eps,
+                      question_tokens=question_tokens  # NEW:  Pass question tokens
+                  )
+                  num_tries += 1
+                  if num_tries > 10 and sample_i is None:
+                      raise ValueError('Sampling failed.')
+              samples. append(sample_i)
+              self.metrics.nfes.update(nfes)
+              self.metrics.gen_nfes.append(nfes)
+      
       samples = torch.cat(samples, dim=0) 
       return self.tokenizer.batch_decode(samples)
-    if self.sampler == 'semi_ar':
-      for _ in range(self.config.sampling.num_sample_batches):
-        sample_i, num_tries = None, 0
-        while sample_i is None:
-          num_tries += 1
-          sample_i, nfes = self._semi_ar_sampler(
-            n_samples=batch_size_per_gpu,
-            num_strides=(seqlen // self.block_size), 
-            num_steps=num_steps,
-            seqlen=seqlen)
-          if num_tries > 10:
-            raise ValueError('Sampling failed.')
-        samples.append(sample_i)
-        self.metrics.nfes.update(nfes)
-        self.metrics.gen_nfes.append(nfes)
-    else:
-      nfes = num_steps
-      for _ in range(self.config.sampling.num_sample_batches):
-        sample_i, num_tries = None, 0
-        while sample_i is None:
-          sample_i = self._analytic_sampler(
-            n_samples=batch_size_per_gpu,
-            num_steps=num_steps,
-            seqlen=seqlen,
-            eps=eps)
-          num_tries += 1
-          if num_tries > 10 and sample_i is None:
-            raise ValueError('Sampling failed.')
-        samples.append(sample_i)
-        self.metrics.nfes.update(nfes)
-        self.metrics.gen_nfes.append(nfes)
-    samples = torch.cat(samples, dim=0) 
-    return self.tokenizer.batch_decode(samples)
 
   def _sigma_from_p(self, p):
     return torch.min(- torch.log(1 - p), self.noise.sigma_max)
 
-  def restore_model_and_sample(self, num_steps, eps=1e-5, seqlen=None):
-    """Generate samples from the model."""
-    if self.ema:  
-      self.ema.store(self._get_parameters())
-      self.ema.copy_to(self._get_parameters())
-    self.backbone.eval()
-    self.noise.eval()
+  def restore_model_and_sample(self, num_steps, eps=1e-5, seqlen=None, question_tokens=None):
+    """Generate samples from the model. 
+    
+    Args:
+        num_steps: Number of denoising steps
+        eps: Minimum noise level  
+        seqlen: Sequence length
+        question_tokens:  (batch, q_len) - Optional question tokens for HDP
+    
+    Returns: 
+        List of decoded text samples
+    """
+    if self. ema:   
+        self.ema.store(self._get_parameters())
+        self.ema.copy_to(self._get_parameters())
+    self. backbone.eval()
+    self.noise. eval()
     samples = self._sample(
-      seqlen=seqlen,
-      batch_size_per_gpu=self.config.loader.eval_batch_size,
-      num_steps=num_steps,
-      eps=eps)
+        seqlen=seqlen,
+        batch_size_per_gpu=self.config.loader.eval_batch_size,
+        num_steps=num_steps,
+        eps=eps,
+        question_tokens=question_tokens  # NEW: Pass question tokens
+    )
     self.metrics.record_generative_perplexity(
-      samples,
-      self.config.model.length,
-      self.config.loader.eval_batch_size,
-      self.device)
+        samples,
+        self.config.model.length,
+        self.config.loader.eval_batch_size,
+        self.device)
     return samples
 
-  def get_score(self, x, sigma):
-    model_output = self.forward(x, sigma).to(torch.float64)
+  def get_score(self, x, sigma, block_indices=None):
+    """Get score with optional HDP attention mask."""
+    model_output = self.forward(
+        x, sigma, 
+        block_indices=block_indices
+    ).to(torch.float64)
+    
     if self.config.sampling.nucleus_p == 1.0:
-      return model_output.exp()
+        return model_output.exp()
     model_output = model_output - model_output.logsumexp(-1, keepdim=True)
-    model_output = self._nucleus_sample(model_output.exp())
+    model_output = self._nucleus_sample(model_output. exp())
     return model_output
 
   def _staggered_score(self, score, dsigma):
@@ -826,19 +865,21 @@ class Diffusion(L.LightningModule):
     score[..., self.mask_index] += extra_const
     return score
 
-  def _analytic_update(self, x, t, dt):
+  def _analytic_update(self, x, t, dt, block_indices=None):
+    """Analytic update step with optional HDP mask."""
     sigma_t = self._sigma_from_p(self.noise(t)[1])
     sigma_s = self._sigma_from_p(self.noise(t - dt)[1])
     dsigma = sigma_t - sigma_s
-    score = self.get_score(x, sigma_t)
+    score = self.get_score(x, sigma_t, block_indices=block_indices)
     stag_score = self._staggered_score(score, dsigma)
     probs = stag_score * self._transp_transition(x, dsigma)
     return _sample_categorical(probs)
 
 
-  def _denoiser_update(self, x, t):
+  def _denoiser_update(self, x, t, block_indices=None):
+    """Final denoising step with optional HDP mask."""
     sigma = self._sigma_from_p(self.noise(t)[1])
-    score = self.get_score(x, sigma)
+    score = self.get_score(x, sigma, block_indices=block_indices)
     stag_score = self._staggered_score(score, sigma)
     probs = stag_score * self._transp_transition(x, sigma)
     probs[..., self.mask_index] = 0
@@ -1067,27 +1108,91 @@ class Diffusion(L.LightningModule):
 
   @torch.no_grad
   def _analytic_sampler(
-    self, n_samples, num_steps, seqlen, eps=1e-5): 
-    x = self._sample_prior(
-      n_samples,
-      seqlen).to(self.device)
-    x[:, 0] = self.tokenizer.bos_token_id
-    timesteps = torch.linspace(
-      1, eps, num_steps + 1, device=self.device)
-    dt = (1 - eps) / num_steps
-    for i in tqdm(range(num_steps), desc='step'):
-      t = timesteps[i] * torch.ones(
-        x.shape[0], 1, device=self.device)
-      x = self._analytic_update(x=x, t=t, dt=dt)
-    # denoising step 
-    t = timesteps[-1] * torch.ones(x.shape[0], 1,
-                                  device=self.device)
-    x = self._denoiser_update(x=x, t=t)
-    
-    stop, x = self._check_stop_conds(x)
-    if stop:
-      return None
-    return x
+      self, n_samples, num_steps, seqlen, eps=1e-5,
+      question_tokens=None
+  ): 
+      """
+      Analytic sampler with HDP support.
+      
+      Args:
+          n_samples: Number of samples to generate
+          num_steps: Number of denoising steps
+          seqlen:  Sequence length
+          eps: Minimum noise level
+          question_tokens: (batch, q_len) - Optional fixed question tokens for HDP
+      
+      Returns:
+          Generated samples tensor
+      """
+      x = self._sample_prior(n_samples, seqlen).to(self.device)
+      
+      # HDP-aware initialization
+      block_indices = None
+      q_len = 0
+      
+      if self.use_hdp_attention and hasattr(self, 'hdp_block_sizes'):
+          q_len, p_len, e_len = self.hdp_block_sizes
+          
+          # Create block_indices for HDP attention mask
+          block_indices = torch.cat([
+              torch. zeros(q_len, dtype=torch. long, device=self.device),
+              torch.ones(p_len, dtype=torch.long, device=self.device),
+              torch.full((e_len,), 2, dtype=torch.long, device=self.device)
+          ]).unsqueeze(0).repeat(n_samples, 1)
+          
+          # If question_tokens provided, use them as fixed context
+          if question_tokens is not None: 
+              # Ensure correct batch size
+              if question_tokens.shape[0] == 1 and n_samples > 1:
+                  question_tokens = question_tokens.repeat(n_samples, 1)
+              
+              # Pad/truncate question to q_len
+              if question_tokens.shape[1] < q_len:
+                  pad_len = q_len - question_tokens.shape[1]
+                  pad_token = self.tokenizer.pad_token_id
+                  if pad_token is None:
+                      pad_token = self. tokenizer.eos_token_id
+                  question_tokens = F.pad(
+                      question_tokens, (0, pad_len), 
+                      value=pad_token
+                  )
+              else:
+                  question_tokens = question_tokens[:, :q_len]
+              
+              # Set question tokens (they will be kept fixed)
+              x[: , :q_len] = question_tokens
+              print(f"✅ HDP Sampling:  Using provided question tokens (len={q_len})")
+          else:
+              # No question provided - set BOS at start
+              x[:, 0] = self. tokenizer.bos_token_id
+              print(f"⚠️ HDP Sampling: No question provided, generating from scratch")
+      else:
+          # Standard (non-HDP) sampling
+          x[: , 0] = self.tokenizer. bos_token_id
+      
+      timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
+      dt = (1 - eps) / num_steps
+      
+      for i in tqdm(range(num_steps), desc='HDP Sampling' if block_indices is not None else 'Sampling'):
+          t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
+          x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
+          
+          # HDP:  Keep question tokens fixed after each update
+          if self.use_hdp_attention and question_tokens is not None and q_len > 0:
+              x[: , :q_len] = question_tokens
+      
+      # Final denoising step
+      t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
+      x = self._denoiser_update(x=x, t=t, block_indices=block_indices)
+      
+      # Final:  ensure question is preserved
+      if self.use_hdp_attention and question_tokens is not None and q_len > 0:
+          x[:, :q_len] = question_tokens
+      
+      stop, x = self._check_stop_conds(x)
+      if stop:
+          return None
+      return x
 
   @torch.no_grad
   def _semi_ar_sampler(
@@ -1158,11 +1263,10 @@ class Diffusion(L.LightningModule):
       # check if we need to resample (or stop sampling for variable-length sampling)
       if x_accum.shape[1] > 256:
         stop, x_accum = self._check_stop_conds(x_accum)
-        if (stop and not self.config.sampling.var_length) \
-          or (stop and x.shape[-1] == 1):
-          return None, None
-        elif stop:
+        if stop and self.config.sampling.var_length:
+          # For variable-length sampling, break when stop conditions met
           break
+        # For fixed-length sampling, continue even if stop conditions met
     return x_accum, sampling_steps
   
   def _compute_entropy(self, x):
@@ -1210,3 +1314,113 @@ class Diffusion(L.LightningModule):
         x = x.unsqueeze(0)
 
     return stop, x
+
+  # ============ HDP SAMPLING HELPERS ============
+
+  def sample_hdp_conditional(
+    self, 
+    question_text: str,
+    num_steps: int = None,
+    eps: float = 1e-5
+  ) -> str:
+    """
+    Convenience method: Generate Plan + Execution given a question text.
+    
+    Args:
+        question_text: The question/problem to solve
+        num_steps: Number of denoising steps (default: config.algo.T)
+        eps: Minimum noise level
+    
+    Returns: 
+        Generated text including Question, Plan, and Execution
+    
+    Example:
+        >>> output = model.sample_hdp_conditional(
+        ...     "Janet's ducks lay 16 eggs per day.  She eats 3 for breakfast..."
+        ... )
+        >>> print(output)
+    """
+    if not self.use_hdp_attention: 
+        raise ValueError("HDP attention not enabled. Set config.data.hdp.use_hdp_attention=True")
+    
+    if num_steps is None:
+        num_steps = self.config.algo.T
+    
+    # Tokenize question
+    question_tokens = self.tokenizer(
+        question_text,
+        return_tensors='pt',
+        add_special_tokens=False,
+        truncation=True,
+        max_length=self.hdp_block_sizes[0]  # q_len
+    )['input_ids'].to(self.device)
+    
+    # Generate
+    if self.ema:
+        self.ema.store(self._get_parameters())
+        self.ema.copy_to(self._get_parameters())
+    
+    self.backbone.eval()
+    self.noise.eval()
+    
+    samples = self._sample(
+        seqlen=self.config.model.length,
+        batch_size_per_gpu=1,
+        num_steps=num_steps,
+        eps=eps,
+        question_tokens=question_tokens
+    )
+    
+    return samples[0] if samples else None
+
+  def sample_hdp_batch(
+      self,
+      questions: list,
+      num_steps: int = None,
+      eps: float = 1e-5
+  ) -> list:
+    """
+    Generate Plan + Execution for a batch of questions. 
+    
+    Args: 
+        questions: List of question strings
+        num_steps: Number of denoising steps
+        eps: Minimum noise level
+    
+    Returns:
+        List of generated texts
+    """
+    if not self.use_hdp_attention:
+        raise ValueError("HDP attention not enabled.")
+    
+    if num_steps is None:
+        num_steps = self.config.algo.T
+    
+    q_len = self.hdp_block_sizes[0]
+    
+    # Tokenize all questions
+    tokenized = self.tokenizer(
+        questions,
+        return_tensors='pt',
+        padding='max_length',
+        truncation=True,
+        max_length=q_len
+    )['input_ids'].to(self.device)
+    
+    # Generate
+    if self.ema:
+        self.ema.store(self._get_parameters())
+        self.ema.copy_to(self._get_parameters())
+    
+    self.backbone.eval()
+    self.noise.eval()
+    
+    samples = self._sample(
+        seqlen=self.config.model.length,
+        batch_size_per_gpu=len(questions),
+        num_steps=num_steps,
+        eps=eps,
+        question_tokens=tokenized
+    )
+    
+    return samples

@@ -8,7 +8,7 @@ echo "GSM8K Baseline Inference Test"
 echo "=========================================="
 
 # Find the latest checkpoint
-CHECKPOINT_DIR="/workspace/hdp-diffusion/outputs/gsm8k/2026.01.01/094630/outputs/gsm8k_bd3lm_test_bs16"
+CHECKPOINT_DIR="/workspace/hdp-diffusion/outputs/gsm8k/2026.01.02/010606/outputs/gsm8k_bd3lm_h200_bs16/"
 CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoints/last.ckpt"
 
 if [ ! -f "$CHECKPOINT_PATH" ]; then
@@ -20,10 +20,6 @@ fi
 
 echo "Using checkpoint: $CHECKPOINT_PATH"
 echo "=========================================="
-
-# Activate environment
-source $(conda info --base)/etc/profile.d/conda.sh
-conda activate bd3lm310
 
 # Run inference
 python -u main.py \

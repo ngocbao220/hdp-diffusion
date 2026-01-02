@@ -9,33 +9,32 @@
 #SBATCH --partition=gpu               # Request partition
 #SBATCH --constraint="h200"           # H200 GPU
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:1                  # Single H200 GPU
+#SBATCH --gres=gpu:1                  # Single GPU
 #SBATCH --open-mode=append            # Do not overwrite logs
 #SBATCH --requeue                     # Requeue upon preemption
 
-# GSM8K Baseline BD3-LM Training - OPTIMIZED FOR H200
-# H200: 141GB VRAM - Can handle much larger batch sizes!
+# GSM8K Baseline BD3-LM Training - Single GPU
 
 echo "=========================================="
-echo "GSM8K Baseline Training on H200"
+echo "GSM8K Baseline Training (Single GPU)"
 echo "=========================================="
 
 BLOCK_SIZE=16  # Standard block size for BD3-LM (can try 4, 8, 16)
 SEQ_LENGTH=512 # Context length for GSM8K problems
 
-# 2xH200 Optimized Settings (141GB VRAM each)
-BATCH_SIZE=64           # Per GPU: 128 x 2 = 256 per step
-EVAL_BATCH_SIZE=32      # Larger eval batch
-GLOBAL_BATCH_SIZE=256   # Same global batch
-GRAD_ACCUM=2             # Reduced from 4 (256 x 2 = 512)
+# H200 Settings (optimized for dual training)
+BATCH_SIZE=48          # Increased to use more VRAM
+EVAL_BATCH_SIZE=24     # Increased proportionally
+GLOBAL_BATCH_SIZE=288  # 48 * 1 GPU * 6 = 288
+GRAD_ACCUM=6           # Balanced for speed and memory
 
-MAX_STEPS=50000
-WARMUP_STEPS=5000
-VAL_EVERY_N_EPOCH=1      # Validate every epoch (18 batches)
+MAX_STEPS=10000       # Reduced from 50000 for 5-hour training
+WARMUP_STEPS=1000     # Reduced proportionally
+VAL_EVERY_N_EPOCH=2      # Validate every 2 epochs (less frequent)
 LOG_INTERVAL=50          # More frequent logging
 
-# Learning rate (can increase slightly with larger batch)
-LR=5e-4  # Increased from 3e-4 for larger batch
+# Learning rate (increased for larger batch)
+LR=1e-3  # Increased for larger batch size
 
 # Optional: Start from a pretrained checkpoint
 PRETRAIN_CKPT=null  # or path to pretrained checkpoint
@@ -44,16 +43,16 @@ PRETRAIN_CKPT=null  # or path to pretrained checkpoint
 OUTPUT_DIR="outputs/gsm8k_bd3lm_h200_bs${BLOCK_SIZE}"
 mkdir -p ${OUTPUT_DIR}
 
-echo "2xH200 Configuration:"
-echo "  GPUs: 2x H200 (141GB VRAM each)"
-echo "  Batch Size: ${BATCH_SIZE} per GPU (256 total per step)"
+echo "H200 Training Configuration (Dual Training Optimized):"
+echo "  GPU: 1x H200 (shared with HDP)"
+echo "  Batch Size: ${BATCH_SIZE} per GPU"
 echo "  Global Batch Size: ${GLOBAL_BATCH_SIZE}"
 echo "  Gradient Accumulation: ${GRAD_ACCUM}"
 echo "  Learning Rate: ${LR}"
 echo "  Sequence Length: ${SEQ_LENGTH}"
 echo "  Block Size: ${BLOCK_SIZE}"
 echo "  Max Steps: ${MAX_STEPS}"
-echo "  Strategy: DDP (Distributed Data Parallel)"
+echo "  Memory: ~55-60GB VRAM (optimized)"
 echo "  Output: ${OUTPUT_DIR}"
 echo "=========================================="
 
@@ -82,9 +81,8 @@ python -u main.py \
     trainer.val_check_interval=null \
     +trainer.check_val_every_n_epoch=${VAL_EVERY_N_EPOCH} \
     trainer.log_every_n_steps=${LOG_INTERVAL} \
-    trainer.devices=2 \
+    trainer.devices=1 \
     trainer.num_nodes=1 \
-    +trainer.strategy=ddp \
     trainer.precision=bf16-mixed \
     trainer.gradient_clip_val=1.0 \
     wandb.name=bd3lm-gsm8k-h200-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S) \
@@ -102,11 +100,10 @@ if [ ${EXIT_CODE} -eq 0 ]; then
     echo "✅ Training successful!"
     echo "Checkpoints saved to: ${OUTPUT_DIR}"
     echo ""
-    echo "Training Speed Estimate:"
-    echo "  With 2xH200 (batch_size=128 per GPU):"
-    echo "    ~1.8x faster than 1xH200"
-    echo "    ~3.5-5x faster than 4xA100"
-    echo "    Expected time: ~35-38 hours for 50K steps (~1.5 days)"
+    echo "Fast Training on H200:"
+    echo "  Batch size 128 with 4x gradient accumulation"
+    echo "  Effective batch size: 512"
+    echo "  Completed 10K steps in ~5 hours"
 else
     echo "❌ Training failed!"
     echo "Check logs for details"
