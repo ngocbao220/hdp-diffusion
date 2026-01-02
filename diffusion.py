@@ -26,6 +26,32 @@ LOGGER = logging.getLogger(__name__)
 def _sample_categorical(categorical_probs):
   gumbel_norm = (1e-10 - (torch.rand_like(categorical_probs) + 1e-10).log())
   samples = (categorical_probs / gumbel_norm).argmax(dim=-1)
+  
+  # Debug first call
+  if not hasattr(_sample_categorical, '_debug_printed'):
+    _sample_categorical._debug_printed = True
+    print(f"\n🔍 [_sample_categorical] FIRST CALL DEBUG:")
+    print(f"   categorical_probs.shape: {categorical_probs.shape}")
+    print(f"   samples.shape: {samples.shape}")
+    print(f"   samples unique values: {torch.unique(samples).tolist()[:20]}")  # First 20
+    print(f"   First 10 samples: {samples[0, :10].tolist()}")
+    print(f"   Samples at positions 128-138 (Plan block): {samples[0, 128:138].tolist()}")
+    
+    # Check if we sampled high indices
+    max_sample = samples.max().item()
+    print(f"   Max sampled value: {max_sample}")
+    if max_sample > 50000:
+      print(f"   ✅ Sampled tokens in high range (50000+)")
+    else:
+      print(f"   ⚠️  Max sample {max_sample} < 50000!")
+      
+    # Check probs at position 128 (first Plan token)
+    probs_at_128 = categorical_probs[0, 128]
+    top5 = probs_at_128.topk(5)
+    print(f"   Probs at position 128 (first Plan token):")
+    print(f"     Top 5 indices: {top5.indices.tolist()}")
+    print(f"     Top 5 probs: {top5.values.tolist()}")
+  
   return samples
 
 def _unsqueeze(x, reference):
