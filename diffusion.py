@@ -135,7 +135,7 @@ class Diffusion(L.LightningModule):
           p_len,  # Plan block
           e_len   # Execution block
         )
-        
+
         print(f"✅ HDP Attention enabled with block sizes: {self.hdp_block_sizes}")
         print(f"   Question:  {q_len}, Plan: {p_len}, Execution: {e_len}")
         print(f"   Total seq length: {sum(self.hdp_block_sizes)}")
@@ -1182,6 +1182,7 @@ class Diffusion(L.LightningModule):
           Generated samples tensor
       """
       x = self._sample_prior(n_samples, seqlen).to(self.device)
+
       print(f"\n{'='*70}")
       print(f"🔍 [_analytic_sampler] Starting sampling")
       print(f"{'='*70}")
@@ -1189,6 +1190,10 @@ class Diffusion(L.LightningModule):
       print(f"has hdp_block_sizes: {hasattr(self, 'hdp_block_sizes')}")
       if hasattr(self, 'hdp_block_sizes'):
           print(f"hdp_block_sizes: {self.hdp_block_sizes}")
+
+      if self.use_hdp_attention: 
+        self.hdp_block_sizes = (128, 128, 256)  # Hardcode for testing
+        print(f"🔧 Force-set hdp_block_sizes:  {self.hdp_block_sizes}")
 
       if self.use_hdp_attention and not hasattr(self, 'hdp_block_sizes'):
         print(f"⚠️  WARNING: use_hdp_attention=True but hdp_block_sizes not found!")
