@@ -38,7 +38,6 @@ class Loss:
   nlls: torch.FloatTensor
   token_mask: torch.FloatTensor
 
-
 class Diffusion(L.LightningModule):
   def __init__(
     self,
@@ -48,7 +47,8 @@ class Diffusion(L.LightningModule):
     self.save_hyperparameters()
     self.config = config
     self.tokenizer = tokenizer
-    self.vocab_size = self.tokenizer.vocab_size
+    # self.vocab_size = self.tokenizer.vocab_size
+    self.vocab_size = len(self.tokenizer) 
     self.sampler = self.config.algo.sampler
     self.antithetic_sampling = self.config.training.antithetic_sampling
     self.cross_attn = self.config.algo.cross_attn

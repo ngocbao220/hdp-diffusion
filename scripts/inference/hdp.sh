@@ -8,8 +8,8 @@ echo "HDP-Diffusion Inference Test"
 echo "=========================================="
 
 # Find the latest HDP checkpoint
-# /workspace/hdp-diffusion/outputs/hdp_diffusion/2026.01.02/023347/outputs/hdp_diffusion_h200_bs16/checkpoints/best.ckpt
-CHECKPOINT_DIR="/workspace/hdp-diffusion/outputs/hdp_diffusion/2026.01.02/023347/outputs/hdp_diffusion_h200_bs16"
+# /workspace/hdp-diffusion/outputs/hdp_diffusion/2026.01.02/055234/outputs/hdp_diffusion_h200_bs16/checkpoints/best.ckpt
+CHECKPOINT_DIR="/workspace/hdp-diffusion/outputs/hdp_diffusion/2026.01.02/055234/outputs/hdp_diffusion_h200_bs16"
 CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoints/last.ckpt"
 
 if [ ! -f "$CHECKPOINT_PATH" ]; then

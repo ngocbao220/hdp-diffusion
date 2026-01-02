@@ -582,6 +582,10 @@ def get_tokenizer(config):
   if tokenizer.pad_token is None:
     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
+  special_tokens_dict = {'additional_special_tokens': ['[PLAN]', '[EXECUTION]', '[ANSWER]']}
+  num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
+  if num_added_toks > 0:
+    print(f"✅ Tokenizer: Added {num_added_toks} special tokens: {special_tokens_dict['additional_special_tokens']}")
   return tokenizer
 
 
