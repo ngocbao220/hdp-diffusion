@@ -988,6 +988,26 @@ class Diffusion(L.LightningModule):
     sigma_s = self._sigma_from_p(self.noise(t - dt)[1])
     dsigma = sigma_t - sigma_s
     score = self.get_score(x, sigma_t, block_indices=block_indices)
+    
+    # 🔍 DEBUG: Check score for mask_index positions (first step only)
+    if not hasattr(self, '_analytic_update_debug_printed'):
+      self._analytic_update_debug_printed = True
+      mask_positions = (x == self.mask_index)
+      if mask_positions.any():
+        print(f"\n🔍 [_analytic_update] FIRST STEP DEBUG:")
+        print(f"   sigma_t: {sigma_t[0, 0].item():.4f}")
+        print(f"   x has {mask_positions.sum().item()} mask_index tokens")
+        print(f"   mask_index: {self.mask_index}")
+        
+        # Check score at first mask position
+        first_mask_pos = mask_positions[0].nonzero()[0].item()
+        score_at_mask = score[0, first_mask_pos]  # (vocab_size,)
+        print(f"   Score at first mask position ({first_mask_pos}):")
+        print(f"     Top 5 tokens: {score_at_mask.topk(5).indices.tolist()}")
+        print(f"     Top 5 scores: {score_at_mask.topk(5).values.tolist()}")
+        print(f"     Score[0]: {score_at_mask[0].item():.4f}")
+        print(f"     Score[mask_index={self.mask_index}]: {score_at_mask[self.mask_index].item():.4f}")
+    
     stag_score = self._staggered_score(score, dsigma)
     probs = stag_score * self._transp_transition(x, dsigma)
     return _sample_categorical(probs)
