@@ -1080,26 +1080,34 @@ class Diffusion(L.LightningModule):
       attention_mask[: , 0] = 0
     
     # ============ HDP LOSS MASKING - NEW CODE ============
-    # Only compute loss on Plan + Execution blocks, not Question
+    # ⚠️ FIX: Include Question in loss with lower weight to prevent collapse
+    # Without this, Question block outputs random tokens (often '!' or PAD)
     if self.use_hdp_attention and block_indices is not None:
       # block_indices: 0=Question, 1=Plan, 2=Execution
-      # We want to mask out Question (block 0) from loss
-      hdp_loss_mask = (block_indices >= 1).float()  # 1 for Plan/Exec, 0 for Question
+      # Use weighted loss: Question=0.3x, Plan=1x, Exec=1x
+      loss_weights = torch.ones_like(block_indices, dtype=torch.float32)
+      loss_weights[block_indices == 0] = 0.3  # Lower weight for Question
+      loss_weights[block_indices == 1] = 1.0  # Full weight for Plan
+      loss_weights[block_indices == 2] = 1.0  # Full weight for Execution
       
       # Combine with attention_mask
-      attention_mask = attention_mask * hdp_loss_mask
+      attention_mask = attention_mask * loss_weights
       
       # Optional: Log separate losses for debugging
       if self.training and hasattr(self, 'global_step') and self.global_step % 100 == 0:
         with torch.no_grad():
+          q_mask = (block_indices == 0).float() * attention_mask
           plan_mask = (block_indices == 1).float() * attention_mask
           exec_mask = (block_indices == 2).float() * attention_mask
+          if q_mask.sum() > 0:
+            q_loss = (loss * q_mask).sum() / q_mask.sum()
+            self.log('trainer/question_loss', q_loss.item(), on_step=True, on_epoch=False)
           if plan_mask.sum() > 0:
             plan_loss = (loss * plan_mask).sum() / plan_mask.sum()
-            self.log('trainer/plan_loss', plan_loss. item(), on_step=True, on_epoch=False)
+            self.log('trainer/plan_loss', plan_loss.item(), on_step=True, on_epoch=False)
           if exec_mask.sum() > 0:
             exec_loss = (loss * exec_mask).sum() / exec_mask.sum()
-            self.log('trainer/exec_loss', exec_loss. item(), on_step=True, on_epoch=False)
+            self.log('trainer/exec_loss', exec_loss.item(), on_step=True, on_epoch=False)
     # ============ END HDP LOSS MASKING ============
        
     nlls = (loss * attention_mask)
