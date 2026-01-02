@@ -1110,20 +1110,30 @@ class Diffusion(L.LightningModule):
     # ⚠️ FIX: Include Question in loss with lower weight to prevent collapse
     # Without this, Question block outputs random tokens (often '!' or PAD)
     if self.use_hdp_attention and block_indices is not None:
+      # ⚠️ CRITICAL FIX: Zero out PAD tokens completely for HDP
+      # PAD tokens (self.mask_index) should NOT contribute to loss
+      # This prevents model from "cheating" by learning PAD patterns
+      pad_mask = (output_tokens != self.mask_index).float()
+      
       # 🔍 DEBUG: Print loss masking info on first step
       if self.training and not hasattr(self, '_loss_mask_debug_printed'):
         self._loss_mask_debug_printed = True
         print("\n" + "="*80)
-        print("🔍 [_loss] HDP LOSS MASKING DEBUG")
+        print("🔍 [_loss] HDP LOSS MASKING DEBUG (with PAD removal)")
         print("="*80)
         print(f"block_indices.shape: {block_indices.shape}")
-        print(f"attention_mask.shape (before weighting): {attention_mask.shape}")
-        print(f"attention_mask sum by block:")
+        print(f"attention_mask.shape: {attention_mask.shape}")
+        print(f"PAD tokens (mask_index={self.mask_index})")
+        print(f"  Total tokens: {output_tokens.numel()}")
+        print(f"  PAD tokens: {(output_tokens == self.mask_index).sum().item()}")
+        print(f"  Content tokens: {(output_tokens != self.mask_index).sum().item()}")
+        print(f"\nActive tokens by block (AFTER removing PAD):")
         for block_id in range(3):
           block_mask = (block_indices == block_id).float()
-          active_tokens = (attention_mask * block_mask).sum().item()
+          active_before = (attention_mask * block_mask).sum().item()
+          active_after = (attention_mask * pad_mask * block_mask).sum().item()
           total_tokens = block_mask.sum().item()
-          print(f"  Block {block_id}: {active_tokens}/{total_tokens} tokens active")
+          print(f"  Block {block_id}: {active_after:.0f}/{total_tokens:.0f} tokens (was {active_before:.0f} before PAD removal)")
         print("="*80 + "\n")
       
       # block_indices: 0=Question, 1=Plan, 2=Execution
@@ -1133,8 +1143,9 @@ class Diffusion(L.LightningModule):
       loss_weights[block_indices == 1] = 1.0  # Full weight for Plan
       loss_weights[block_indices == 2] = 1.0  # Full weight for Execution
       
-      # Combine with attention_mask
-      attention_mask = attention_mask * loss_weights
+      # Combine: attention_mask * pad_mask * loss_weights
+      # This ensures PAD tokens have ZERO contribution to loss
+      attention_mask = attention_mask * pad_mask * loss_weights
       
       # Optional: Log separate losses for debugging
       if self.training and hasattr(self, 'global_step') and self.global_step % 100 == 0:
