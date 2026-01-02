@@ -1021,7 +1021,8 @@ class Diffusion(L.LightningModule):
       mask_positions = (x == self.mask_index)
       if mask_positions.any():
         print(f"\n🔍 [_analytic_update] FIRST STEP DEBUG:")
-        print(f"   sigma_t: {sigma_t[0, 0].item():.4f}")
+        print(f"   sigma_t: {sigma_t[0, 0].item():.4f}, sigma_s: {sigma_s[0, 0].item():.4f}")
+        print(f"   dsigma: {dsigma[0, 0].item():.4f}, exp(dsigma): {dsigma[0, 0].exp().item():.6f}")
         print(f"   x has {mask_positions.sum().item()} mask_index tokens")
         print(f"   mask_index: {self.mask_index}")
         
@@ -1035,8 +1036,31 @@ class Diffusion(L.LightningModule):
         print(f"     Score[mask_index={self.mask_index}]: {score_at_mask[self.mask_index].item():.4f}")
     
     stag_score = self._staggered_score(score, dsigma)
+    
+    # DEBUG: Check stag_score after adding mask probability
+    if not hasattr(self, '_stag_score_debug_printed'):
+      self._stag_score_debug_printed = True
+      mask_positions = (x == self.mask_index)
+      if mask_positions.any():
+        first_mask_pos = mask_positions[0].nonzero()[0].item()
+        stag_at_mask = stag_score[0, first_mask_pos]
+        print(f"\n🔍 [_staggered_score] AFTER applying mask probability:")
+        print(f"   Top 5 tokens: {stag_at_mask.topk(5).indices.tolist()}")
+        print(f"   Top 5 scores: {stag_at_mask.topk(5).values.tolist()}")
+        print(f"   Score[mask_index={self.mask_index}]: {stag_at_mask[self.mask_index].item():.4f}")
+        print(f"   Mask probability should be high (close to 1.0) early in sampling")
+    
     probs = stag_score * self._transp_transition(x, dsigma)
-    return _sample_categorical(probs)
+    
+    # Sample new tokens
+    x_new = _sample_categorical(probs)
+    
+    # FIX: Keep non-mask tokens unchanged (like DDPM sampler)
+    # Only update positions that were mask_index
+    copy_flag = (x != self.mask_index).to(x.dtype)
+    x_out = copy_flag * x + (1 - copy_flag) * x_new
+    
+    return x_out
 
 
   def _denoiser_update(self, x, t, block_indices=None):
