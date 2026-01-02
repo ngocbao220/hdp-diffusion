@@ -34,16 +34,15 @@ python -u main.py \
     algo.backbone=dit \
     block_size=4 \
     data=hdp_overfit \
+    data.hdp.use_hdp_attention=true \
+    data.hdp.question_len=128 \
+    data.hdp.plan_len=128 \
+    data.hdp.exec_len=256 \
     eval.checkpoint_path=$CHECKPOINT_PATH \
     eval.disable_ema=false \
     loader.eval_batch_size=1 \
     sampling.num_sample_batches=1 \
     sampling.logdir=outputs/hdp_samples \
-    +hdp.enabled=true \
-    +hdp.question_len=128 \
-    +hdp.plan_len=128 \
-    +hdp.exec_len=256 \
-    +hdp.use_hdp_attention=true \
     wandb=null
 
 EXIT_CODE=$?
