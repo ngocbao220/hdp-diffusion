@@ -1476,6 +1476,15 @@ class Diffusion(L.LightningModule):
 
               x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
               
+              # 🔍 DEBUG: Check if Plan/Exec are stuck at mask_index
+              if i % 100 == 0 and block_indices is not None:  # Every 100 steps
+                  q_len, p_len, e_len = self.hdp_block_sizes
+                  plan_tokens = x[0, q_len:q_len+p_len]
+                  exec_tokens = x[0, q_len+p_len:]
+                  plan_mask_count = (plan_tokens == self.mask_index).sum().item()
+                  exec_mask_count = (exec_tokens == self.mask_index).sum().item()
+                  print(f"\n   Step {i}: Plan has {plan_mask_count}/{p_len} mask tokens, Exec has {exec_mask_count}/{e_len} mask tokens")
+              
               # Keep question tokens fixed if provided
               if self.use_hdp_attention and question_tokens is not None:
                   q_len = self.hdp_block_sizes[0]
