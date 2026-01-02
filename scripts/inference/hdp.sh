@@ -10,7 +10,7 @@ echo "=========================================="
 # Find the latest HDP checkpoint
 # /content/hdp-diffusion/outputs/hdp_diffusion/2026.01.02/095301/outputs/hdp_diffusion_h200_bs4/checkpoints/best.ckpt
 CHECKPOINT_DIR="/content/hdp-diffusion/outputs/hdp_diffusion/2026.01.02/095301/outputs/hdp_diffusion_h200_bs4"
-CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoints/last.ckpt"
+CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoints/best.ckpt"
 
 if [ ! -f "$CHECKPOINT_PATH" ]; then
     echo "❌ Checkpoint not found: $CHECKPOINT_PATH"
