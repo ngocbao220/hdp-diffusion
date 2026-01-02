@@ -33,7 +33,7 @@ GRAD_ACCUM=1
 # Training hyperparameters (OVERFITTING TEST)
 MAX_STEPS=500        # 500 steps should memorize 1 sample
 WARMUP_STEPS=10      # Short warmup
-VAL_EVERY_N_EPOCH=1  # Validate every epoch
+VAL_EVERY_N_EPOCH=10  # Validate every 10 epochs
 LOG_INTERVAL=10      # Log frequently
 
 # Learning rate
