@@ -1239,13 +1239,7 @@ class Diffusion(L.LightningModule):
           ]).unsqueeze(0).repeat(n_samples, 1)
           print(f"   ✅ block_indices.shape: {block_indices.shape}")
           print(f"   ✅ unique blocks: {torch.unique(block_indices).tolist()}")
-      else:
-          print(f"❌ NOT creating block_indices!")
-          if not self.use_hdp_attention:
-              print(f"   Reason: use_hdp_attention=False")
-          elif self.hdp_block_sizes is None:
-              print(f"   Reason: hdp_block_sizes is None")  
-
+          
           # If question_tokens provided, use them as fixed context
           if question_tokens is not None: 
               # Ensure correct batch size
@@ -1257,7 +1251,7 @@ class Diffusion(L.LightningModule):
                   pad_len = q_len - question_tokens.shape[1]
                   pad_token = self.tokenizer.pad_token_id
                   if pad_token is None:
-                      pad_token = self. tokenizer.eos_token_id
+                      pad_token = self.tokenizer.eos_token_id
                   question_tokens = F.pad(
                       question_tokens, (0, pad_len), 
                       value=pad_token
@@ -1266,15 +1260,20 @@ class Diffusion(L.LightningModule):
                   question_tokens = question_tokens[:, :q_len]
               
               # Set question tokens (they will be kept fixed)
-              x[: , :q_len] = question_tokens
-              print(f"✅ HDP Sampling:  Using provided question tokens (len={q_len})")
+              x[:, :q_len] = question_tokens
+              print(f"✅ HDP Sampling: Using provided question tokens (len={q_len})")
           else:
               # No question provided - set BOS at start
-              x[:, 0] = self. tokenizer.bos_token_id
+              x[:, 0] = self.tokenizer.bos_token_id
               print(f"⚠️ HDP Sampling: No question provided, generating from scratch")
       else:
           # Standard (non-HDP) sampling
-          x[: , 0] = self.tokenizer. bos_token_id
+          print(f"❌ NOT creating block_indices!")
+          if not self.use_hdp_attention:
+              print(f"   Reason: use_hdp_attention=False")
+          elif self.hdp_block_sizes is None:
+              print(f"   Reason: hdp_block_sizes is None")
+          x[:, 0] = self.tokenizer.bos_token_id
       
       timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
       dt = (1 - eps) / num_steps
