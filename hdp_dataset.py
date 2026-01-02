@@ -302,68 +302,98 @@ def collate_hdp_batch(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     
     return batched
 
-
 if __name__ == "__main__":
-    # Test dataset
-    from transformers import AutoTokenizer
-    
-    print("Testing HDP Dataset...")
-    
-    # Create dummy data
-    dummy_data = [
-        {
-            "question": "What is 2 + 2?",
-            "plan": "Add the two numbers together.",
-            "execution": "2 + 2 = 4. The answer is 4."
-        },
-        {
-            "question": "If John has 5 apples and gives 2 away, how many does he have?",
-            "plan": "Subtract the number given away from the initial amount.",
-            "execution": "John starts with 5 apples. He gives away 2. 5 - 2 = 3. John has 3 apples left."
-        }
-    ]
-    
-    # Save dummy data
-    import tempfile
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump(dummy_data, f)
-        temp_path = f.name
-    
-    # Create dataset
-    tokenizer = AutoTokenizer.from_pretrained('gpt2')
-    tokenizer.pad_token = tokenizer.eos_token
-    
-    dataset = HDPDataset(
-        data_path=temp_path,
-        tokenizer=tokenizer,
-        block_sizes=(128, 128, 256)
-    )
-    
-    print(f"\nDataset size: {len(dataset)}")
-    
-    # Get sample
-    sample = dataset[0]
-    print(f"\nSample keys: {sample.keys()}")
-    print(f"Input IDs shape: {sample['input_ids'].shape}")
-    print(f"Attention mask shape: {sample['attention_mask'].shape}")
-    print(f"Block indices shape: {sample['block_indices'].shape}")
-    print(f"Block distribution: {torch.bincount(sample['block_indices'])}")
-    
-    # Test DataLoader
+    import os
+    from transformers import AutoTokenizer, GPT2Tokenizer
     from torch.utils.data import DataLoader
     
-    dataloader = DataLoader(
-        dataset,
-        batch_size=2,
-        collate_fn=collate_hdp_batch
-    )
+    # --- CẤU HÌNH ---
+    # Thay đường dẫn này bằng đường dẫn tới file thật của bạn
+    REAL_DATA_PATH = 'data/gsm8k/gsm8k_hierarchical_test.json'
     
-    batch = next(iter(dataloader))
-    print(f"\nBatch input_ids shape: {batch['input_ids'].shape}")
-    print(f"Batch attention_mask shape: {batch['attention_mask'].shape}")
+    print(f"Testing HDP Dataset with real data at: {REAL_DATA_PATH}")
     
-    # Cleanup
-    import os
-    os.remove(temp_path)
-    
-    print("\n✅ HDP Dataset tests passed!")
+    # 1. Kiểm tra file
+    if not os.path.exists(REAL_DATA_PATH):
+        print(f"\n❌ ERROR: File not found at {REAL_DATA_PATH}")
+        exit(1)
+
+    # 2. Load Tokenizer
+    print("Loading tokenizer...")
+    try:
+        tokenizer = AutoTokenizer.from_pretrained('gpt2') 
+        tokenizer.pad_token = tokenizer.eos_token
+    except:
+        tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # 3. Load Dataset
+    print("\nAttempting to load HDPDataset...")
+    try:
+        # Thử load dataset chuẩn
+        dataset = HDPDataset(
+            data_path=REAL_DATA_PATH,
+            tokenizer=tokenizer,
+            block_sizes=(128, 128, 256) # Q=128, P=128, E=256
+        )
+    except ValueError:
+        print("⚠️  Standard load failed (missing keys), trying Simple/Fallback mode...")
+        # Fallback nếu file json chưa chia sẵn plan/execution
+        dataset = HDPDatasetSimple(
+            data_path=REAL_DATA_PATH,
+            tokenizer=tokenizer,
+            block_sizes=(128, 128, 256)
+        )
+
+    # 4. HÀM KIỂM TRA DECODE CHI TIẾT
+    def debug_print_sample(sample_idx, dataset, tokenizer):
+        sample = dataset[sample_idx]
+        
+        input_ids = sample['input_ids']
+        block_indices = sample['block_indices']
+        
+        # Tách các token dựa trên block_indices
+        # 0: Question, 1: Plan, 2: Execution
+        q_tokens = input_ids[block_indices == 0]
+        p_tokens = input_ids[block_indices == 1]
+        e_tokens = input_ids[block_indices == 2]
+        
+        # Hàm lọc padding để in cho đẹp
+        pad_id = tokenizer.pad_token_id
+        def decode_clean(tokens):
+            # Lọc bỏ pad token để dễ đọc nội dung
+            valid_tokens = tokens[tokens != pad_id]
+            text = tokenizer.decode(valid_tokens, skip_special_tokens=False)
+            return text if text.strip() else "[EMPTY / PADDING ONLY]"
+
+        print("\n" + "="*60)
+        print(f"🔎 DETAILED STRUCTURE CHECK (Sample #{sample_idx})")
+        print("="*60)
+        
+        print(f"\n🟦 [BLOCK 0: QUESTION] (Allocated: {len(q_tokens)} tokens)")
+        print(f"   Shape check: {q_tokens.shape}")
+        print("-" * 60)
+        print(decode_clean(q_tokens))
+        
+        print(f"\n🟨 [BLOCK 1: PLAN] (Allocated: {len(p_tokens)} tokens)")
+        print(f"   Shape check: {p_tokens.shape}")
+        print("-" * 60)
+        print(decode_clean(p_tokens))
+        
+        print(f"\n🟩 [BLOCK 2: EXECUTION] (Allocated: {len(e_tokens)} tokens)")
+        print(f"   Shape check: {e_tokens.shape}")
+        print("-" * 60)
+        print(decode_clean(e_tokens))
+        
+        print("\n" + "="*60 + "\n")
+
+    # 5. Thực hiện in kiểm tra mẫu đầu tiên
+    print("Dataset size:", len(dataset))
+    if len(dataset) > 0:
+        debug_print_sample(0, dataset, tokenizer)
+        
+        # Kiểm tra thêm 1 mẫu nữa để chắc chắn (ví dụ mẫu số 1)
+        if len(dataset) > 1:
+            debug_print_sample(1, dataset, tokenizer)
+
+    print("✅ Done verifying format.")
