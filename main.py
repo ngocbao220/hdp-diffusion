@@ -131,8 +131,8 @@ def generate_samples(config, logger, tokenizer):
                 logger.warning('Falling back to unconditional generation')
 
     # Generate samples
-    text_samples = model. restore_model_and_sample(
-        num_steps=config. algo.T,
+    text_samples = model.restore_model_and_sample(
+        num_steps=config.sampling.get('num_steps', config.algo.T),
         question_tokens=question_tokens
     )
 
