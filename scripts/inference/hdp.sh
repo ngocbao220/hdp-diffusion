@@ -8,8 +8,8 @@ echo "HDP-Diffusion Inference Test"
 echo "=========================================="
 
 # Find the latest HDP checkpoint
-# /workspace/hdp-diffusion/outputs/hdp_diffusion/2026.01.02/055234/outputs/hdp_diffusion_h200_bs16/checkpoints/best.ckpt
-CHECKPOINT_DIR="/workspace/hdp-diffusion/outputs/hdp_diffusion/2026.01.02/055234/outputs/hdp_diffusion_h200_bs16"
+# /content/hdp-diffusion/outputs/hdp_diffusion/2026.01.02/095301/outputs/hdp_diffusion_h200_bs4/checkpoints/best.ckpt
+CHECKPOINT_DIR="/content/hdp-diffusion/outputs/hdp_diffusion/2026.01.02/095301/outputs/hdp_diffusion_h200_bs4"
 CHECKPOINT_PATH="${CHECKPOINT_DIR}/checkpoints/last.ckpt"
 
 if [ ! -f "$CHECKPOINT_PATH" ]; then
@@ -26,18 +26,18 @@ echo "=========================================="
 # Run inference with HDP structure
 python -u main.py \
     mode=sample_eval \
-    model=small \
+    model=tiny \
     model.length=512 \
     model.attn_backend=sdpa \
     algo=bd3lm \
     algo.T=1000 \
     algo.backbone=dit \
-    block_size=16 \
-    data=hdp_diffusion \
+    block_size=4 \
+    data=hdp_overfit \
     eval.checkpoint_path=$CHECKPOINT_PATH \
     eval.disable_ema=false \
     loader.eval_batch_size=1 \
-    sampling.num_sample_batches=5 \
+    sampling.num_sample_batches=1 \
     sampling.logdir=outputs/hdp_samples \
     +hdp.enabled=true \
     +hdp.question_len=128 \

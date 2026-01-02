@@ -6,8 +6,8 @@ train: hdp_diffusion
 valid: hdp_diffusion
 
 # Data paths (use hierarchical JSON format)
-train_path: /workspace/hdp-diffusion/data/gsm8k/gsm8k_overfit.json
-test_path: /workspace/hdp-diffusion/data/gsm8k/gsm8k_overfit.json
+train_path: /content/hdp-diffusion/data/gsm8k/gsm8k_overfit.json
+test_path: /content/hdp-diffusion/data/gsm8k/gsm8k_overfit.json
 
 # Tokenizer
 tokenizer_name_or_path: gpt2

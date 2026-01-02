@@ -25,19 +25,19 @@ EXEC_LEN=256
 SEQ_LEN=$((QUESTION_LEN + PLAN_LEN + EXEC_LEN))  # 512
 
 # Block diffusion settings
-BLOCK_SIZE=16  # Can try 4, 8, 16
+BLOCK_SIZE=4  # Can try 4, 8, 16
 
 # H200 Settings (optimized for dual training)
-BATCH_SIZE=48         # Increased to use more VRAM
-EVAL_BATCH_SIZE=24    # Increased proportionally
-GLOBAL_BATCH_SIZE=288    # 48 * 1 GPU * 6 = 288
-GRAD_ACCUM=6             # Balanced for speed and memory
+BATCH_SIZE=8         # Increased to use more VRAM
+EVAL_BATCH_SIZE=4    # Increased proportionally
+GLOBAL_BATCH_SIZE=16    # 48 * 1 GPU * 6 = 288
+GRAD_ACCUM=2             # Balanced for speed and memory
 
 # Training hyperparameters (optimized for 5 hours)
-MAX_STEPS=10000       # Reduced from 50000 for 5-hour training
-WARMUP_STEPS=1000     # Reduced proportionally
-VAL_EVERY_N_EPOCH=2      # Validate every 2 epochs (less frequent)
-LOG_INTERVAL=50
+MAX_STEPS=1000       # Reduced from 50000 for 5-hour training
+WARMUP_STEPS=50     # Reduced proportionally
+VAL_EVERY_N_EPOCH=100     # Validate every 2 epochs (less frequent)
+LOG_INTERVAL=100
 
 # Learning rate (increased for larger batch)
 LR=1e-3  # Increased for larger batch size
@@ -73,7 +73,7 @@ conda activate hdp
 # Run HDP-Diffusion training with H200 optimizations
 python -u main.py \
     mode=train \
-    model=small \
+    model=tiny \
     data=hdp_overfit \
     model.length=${SEQ_LEN} \
     model.attn_backend=sdpa \
