@@ -1163,6 +1163,17 @@ class Diffusion(L.LightningModule):
     Analytic update using correct D3PM/MDLM posterior formula.
     P(xt-1 | xt, x0) formula for absorbing diffusion.
     """
+    # Debug: Check if block_indices is passed
+    if not hasattr(self, '_analytic_update_debug'):
+      self._analytic_update_debug = True
+      print(f"\n🔍 [_analytic_update] Entry debug:")
+      print(f"   block_indices is None: {block_indices is None}")
+      if block_indices is not None:
+        print(f"   block_indices.shape: {block_indices.shape}")
+      print(f"   has hdp_block_sizes: {hasattr(self.config.model, 'hdp_block_sizes')}")
+      if hasattr(self.config.model, 'hdp_block_sizes'):
+        print(f"   hdp_block_sizes: {self.config.model.hdp_block_sizes}")
+    
     # 1. Tính toán xác suất Mask tại bước t và bước s (bước tiếp theo)
     # P(masked at t) = 1 - exp(-sigma_t)
     curr_sigma = self._sigma_from_p(self.noise(t)[1])
@@ -1464,60 +1475,42 @@ class Diffusion(L.LightningModule):
     # ⚠️ FIX: Include Question in loss with lower weight to prevent collapse
     # Without this, Question block outputs random tokens (often '!' or PAD)
     if self.use_hdp_attention and block_indices is not None:
-      # ⚠️ CRITICAL FIX: Zero out PAD tokens completely for HDP
-      # PAD tokens (self.mask_index) should NOT contribute to loss
-      # This prevents model from "cheating" by learning PAD patterns
-      # Use x0 (original tokens before subsampling) to identify PAD tokens
-      pad_mask = (x0 != self.mask_index).float()
+      # 1. Xác định vị trí Content hợp lệ (Không phải Diffusion Mask VÀ Không phải Padding Token)
+      # Lưu ý: x0 là ground truth
       
-      # 🔍 DEBUG: Print loss masking info on first step
-      if self.training and not hasattr(self, '_loss_mask_debug_printed'):
-        self._loss_mask_debug_printed = True
-        print("\n" + "="*80)
-        print("🔍 [_loss] HDP LOSS MASKING DEBUG (with PAD removal)")
-        print("="*80)
-        print(f"block_indices.shape: {block_indices.shape}")
-        print(f"attention_mask.shape: {attention_mask.shape}")
-        print(f"PAD tokens (mask_index={self.mask_index})")
-        print(f"  Total tokens: {x0.numel()}")
-        print(f"  PAD tokens: {(x0 == self.mask_index).sum().item()}")
-        print(f"  Content tokens: {(x0 != self.mask_index).sum().item()}")
-        print(f"\nActive tokens by block (AFTER removing PAD):")
-        for block_id in range(3):
-          block_mask = (block_indices == block_id).float()
-          active_before = (attention_mask * block_mask).sum().item()
-          active_after = (attention_mask * pad_mask * block_mask).sum().item()
-          total_tokens = block_mask.sum().item()
-          print(f"  Block {block_id}: {active_after:.0f}/{total_tokens:.0f} tokens (was {active_before:.0f} before PAD removal)")
-        print("="*80 + "\n")
+      # Lấy pad_token_id từ tokenizer
+      pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
+      if pad_token_id is None:
+          pad_token_id = getattr(self.tokenizer, 'eos_token_id', -1)
+
+      # Tạo mask cho các token nội dung thực sự
+      # Loại bỏ mask_index (phòng hờ)
+      is_content = (x0 != self.mask_index)
+      # QUAN TRỌNG: Loại bỏ luôn pad_token_id (50257)
+      if pad_token_id is not None:
+          is_content = is_content & (x0 != pad_token_id)
       
-      # block_indices: 0=Question, 1=Plan, 2=Execution
-      # Use weighted loss: Question=0.0x (no loss!), Plan=1x, Exec=1x
-      # ✅ Question is INPUT - model should NOT learn to generate it!
+      content_mask = is_content.float()
+      
+      # 2. Áp dụng trọng số cho từng khối (Question, Plan, Exec)
       loss_weights = torch.ones_like(block_indices, dtype=torch.float32)
-      loss_weights[block_indices == 0] = 0.0  # NO loss for Question (it's input!)
-      loss_weights[block_indices == 1] = 1.0  # Full weight for Plan
-      loss_weights[block_indices == 2] = 1.0  # Full weight for Execution
+      loss_weights[block_indices == 0] = 0.0  # Question: Input -> Không tính loss
+      loss_weights[block_indices == 1] = 1.0  # Plan: Output -> Tính loss
+      loss_weights[block_indices == 2] = 1.0  # Exec: Output -> Tính loss
       
-      # Combine: attention_mask * pad_mask * loss_weights
-      # This ensures PAD tokens have ZERO contribution to loss
-      attention_mask = attention_mask * pad_mask * loss_weights
+      # 3. Kết hợp Mask: Chỉ tính loss tại (Nơi có nội dung) VÀ (Nơi cần sinh ra)
+      attention_mask = attention_mask * content_mask * loss_weights
       
-      # Optional: Log separate losses for debugging
-      if self.training and hasattr(self, 'global_step') and self.global_step % 100 == 0:
-        with torch.no_grad():
-          q_mask = (block_indices == 0).float() * attention_mask
-          plan_mask = (block_indices == 1).float() * attention_mask
-          exec_mask = (block_indices == 2).float() * attention_mask
-          if q_mask.sum() > 0:
-            q_loss = (loss * q_mask).sum() / q_mask.sum()
-            self.log('trainer/question_loss', q_loss.item(), on_step=True, on_epoch=False)
-          if plan_mask.sum() > 0:
-            plan_loss = (loss * plan_mask).sum() / plan_mask.sum()
-            self.log('trainer/plan_loss', plan_loss.item(), on_step=True, on_epoch=False)
-          if exec_mask.sum() > 0:
-            exec_loss = (loss * exec_mask).sum() / exec_mask.sum()
-            self.log('trainer/exec_loss', exec_loss.item(), on_step=True, on_epoch=False)
+      # 🔍 DEBUG: In ra để kiểm chứng việc loại bỏ PAD (Chỉ in 1 lần hoặc khi cần debug)
+      if self.training and self.global_step % 1000 == 0: # Giảm tần suất in
+          with torch.no_grad():
+              total_elements = x0.numel()
+              total_pads = (x0 == pad_token_id).sum().item()
+              active_loss_tokens = attention_mask.sum().item()
+              print(f"\n🔍 [Loss Mask Fix] Check:")
+              print(f"   Total tokens: {total_elements}")
+              print(f"   PAD tokens (ignored): {total_pads}")
+              print(f"   Active Loss Tokens: {active_loss_tokens} (Should be << Total - PAD)")
     # ============ END HDP LOSS MASKING ============
        
     nlls = (loss * attention_mask)
