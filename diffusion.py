@@ -1136,9 +1136,26 @@ class Diffusion(L.LightningModule):
 
   def _staggered_score(self, score, dsigma):
     score = score.clone()
-    extra_const = (1 - dsigma.exp()) * score.sum(dim=-1)
-    score *= dsigma.exp()[:, None]
+    
+    # Tính xác suất giữ lại mask (hoặc xác suất bổ sung cho mask)
+    # Sử dụng exp(-dsigma) để đảm bảo giá trị nằm trong khoảng (0, 1)
+    # dsigma > 0 => exp(-dsigma) < 1 => (1 - exp) > 0 (DƯƠNG)
+    prob_decay = torch.exp(-dsigma)[:, None]
+    prob_mask_mass = (1 - torch.exp(-dsigma))
+    
+    # Scale điểm của các token từ vựng giảm đi
+    score = score * prob_decay
+    
+    # Cộng phần xác suất còn thiếu vào mask_index
+    # score.sum(dim=-1) thường xấp xỉ 1 (nếu score là prob), nhưng giữ lại để scale đúng
+    extra_const = prob_mask_mass.squeeze() * score.sum(dim=-1)
+    
+    # Đảm bảo shape khớp khi cộng
+    if extra_const.ndim < score.ndim - 1:
+         extra_const = extra_const.unsqueeze(-1)
+         
     score[..., self.mask_index] += extra_const
+    
     return score
 
   def _analytic_update(self, x, t, dt, block_indices=None):
@@ -1255,24 +1272,28 @@ class Diffusion(L.LightningModule):
       print(f"   self.mask_index: {self.mask_index}")
       print(f"   First 10 i values: {i[0, :10].tolist()}")
     
-    # Create transition matrix
-    # For regular tokens: edge[i] has high probability at position i
-    # For mask_index: uniform over ALL tokens (allow any transition)
-    edge = torch.exp(-sigma) * F.one_hot(
-      i, num_classes=self.vocab_size)
+    # Create transition matrix p(x_s=j | x_0=i, t)
+    # For regular tokens: self-loop with prob exp(-sigma), others 0
+    # For mask_index: uniform distribution over all tokens
     
-    # When i == mask_index, use uniform distribution (not all 1s!)
-    # This allows mask to transition to any token with equal probability
+    # Convert i to one-hot: [batch, seq, vocab_size]
+    # one_hot[b, pos, i[b,pos]] = 1.0, others = 0.0
+    edge = F.one_hot(i, num_classes=self.vocab_size).float()
+    
+    # Multiply by exp(-sigma) for self-loop probability
+    edge = edge * torch.exp(-sigma)
+    
+    # For mask positions, replace with uniform distribution
     mask_positions = (i == self.mask_index)
     if mask_positions.any():
-      # Uniform distribution: (1-exp(-sigma))/(vocab_size-1) for each token
-      # sigma shape: [batch, 1, 1], need to broadcast correctly
-      uniform_val = (1 - torch.exp(-sigma)).squeeze()  # Squeeze to scalar/1D
+      # Uniform: (1 - exp(-sigma)) / (vocab_size - 1) for non-self transitions
+      # But for mask, we want uniform over ALL vocab
+      uniform_val = (1 - torch.exp(-sigma))  # Total prob mass for transitions
       uniform_prob = uniform_val / (self.vocab_size - 1)
       
       # edge[mask_positions] has shape [num_masks, vocab_size]
-      # Broadcast uniform_prob to match
-      edge[mask_positions] = uniform_prob
+      # Fill with uniform probability
+      edge[mask_positions] = uniform_prob.squeeze(-1)  # Broadcast scalar
     
     return edge
 
