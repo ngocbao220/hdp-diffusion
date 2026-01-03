@@ -1192,10 +1192,25 @@ class Diffusion(L.LightningModule):
     # Sample new tokens
     x_new = _sample_categorical(probs)
     
-    # FIX: Keep non-mask tokens unchanged (like DDPM sampler)
-    # Only update positions that were mask_index
-    copy_flag = (x != self.mask_index).to(x.dtype)
-    x_out = copy_flag * x + (1 - copy_flag) * x_new
+    # ✅ CRITICAL: Selective unmasking based on confidence
+    # At step 0 (high noise), keep most tokens masked
+    # Only unmask tokens where model is confident (high prob for non-mask token)
+    
+    # Get probability of NOT staying masked
+    unmask_confidence = 1.0 - probs[..., self.mask_index]
+    
+    # Bernoulli sampling: unmask with probability = unmask_confidence
+    should_unmask = torch.bernoulli(unmask_confidence).bool()
+    
+    # For non-mask positions, always keep original token
+    is_mask_token = (x == self.mask_index)
+    
+    # Final decision: unmask only if (1) was mask AND (2) should unmask
+    x_out = torch.where(
+        is_mask_token & should_unmask,
+        x_new,  # Replace with sampled token
+        x       # Keep original
+    )
     
     return x_out
 
