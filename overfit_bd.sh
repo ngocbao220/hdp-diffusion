@@ -72,11 +72,8 @@ PRETRAIN_CKPT=null
 OUTPUT_DIR="outputs/bd_baseline_overfit_test"
 mkdir -p ${OUTPUT_DIR}
 
-echo "BD3-LM BASELINE OVERFITTING TEST:"
-echo "  GPU: 1x H200"
-echo "  Dataset: 1 SAMPLE (gsm8k_overfit.json)"
-echo "  Format: BASELINE (Question: ... Answer: ...)"
-echo "  Goal: Verify model can memorize 1 example"
+echo "BD3-LM BASELINE OVERFITTING TEST"
+echo "  Dataset: ${DATA_CONFIG} (1 sample)"
 echo "  Sequence Length: ${SEQ_LEN} tokens"
 echo "  Diffusion Block Size: ${BLOCK_SIZE}"
 echo "  Batch Size: ${BATCH_SIZE}"

@@ -80,9 +80,8 @@ PRETRAIN_CKPT=null
 OUTPUT_DIR="outputs/hdp_overfit_test"
 mkdir -p ${OUTPUT_DIR}
 
-echo "H200 OVERFITTING TEST Configuration:"
-echo "  GPU: 1x H200"
-echo "  Dataset: 1 SAMPLE (gsm8k_overfit.json)"
+echo "HDP overfit test:"
+echo "  Dataset: ${DATA_CONFIG} (1 sample)"
 echo "  Goal: Verify model can memorize 1 example"
 echo "  Hierarchical Structure:"
 echo "    Question: ${QUESTION_LEN} tokens"
@@ -96,10 +95,6 @@ echo "  Max Steps: ${MAX_STEPS}"
 echo "  Expected: Loss should drop to near 0"
 echo "  Output: ${OUTPUT_DIR}"
 echo "=========================================="
-
-# Activate conda environment
-source $(conda info --base)/etc/profile.d/conda.sh
-conda activate hdp
 
 # Run HDP-Diffusion training with configurable parameters
 python -u main.py \
