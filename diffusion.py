@@ -1297,6 +1297,16 @@ class Diffusion(L.LightningModule):
     
     model_output = self.forward(x_input, curr_sigma, sample_mode=True, block_indices=block_indices)
     
+    # ✅ FIX #1: HARD BAN MARKER TOKENS FROM PREDICTION
+    # Markers are STRUCTURAL - must be injected by logic, NOT predicted by model!
+    plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
+    exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
+    answer_token_id = getattr(self.config.model, 'answer_token_id', 50260)
+    
+    model_output[..., plan_token_id] = self.neg_infinity
+    model_output[..., exec_token_id] = self.neg_infinity
+    model_output[..., answer_token_id] = self.neg_infinity
+    
     # 3. Adaptive decoding: Greedy vs Sampling
     use_greedy = getattr(self.config.sampling, 'use_greedy_decoding', True)  # Default: greedy
     
@@ -1336,6 +1346,19 @@ class Diffusion(L.LightningModule):
     # 4. Apply unmasking based on probability threshold
     should_unmask = (torch.rand_like(prob_unmask.float()) < prob_unmask.float())
     is_mask = (x == self.mask_index)
+    
+    # ✅ FIX #2: FREEZE MARKER POSITIONS - NEVER UNMASK THEM!
+    # Markers must remain fixed at block boundaries
+    if self.use_hdp_attention and self.hdp_block_sizes is not None:
+        q_len, p_len, e_len = self.hdp_block_sizes
+        marker_positions = torch.zeros_like(x, dtype=torch.bool)
+        if x.shape[1] > q_len:
+            marker_positions[:, q_len] = True  # <|plan|>
+        if x.shape[1] > (q_len + p_len):
+            marker_positions[:, q_len + p_len] = True  # <|execution|>
+        # Prevent unmasking at marker positions
+        should_unmask = should_unmask & (~marker_positions.unsqueeze(-1))
+    
     x_out = torch.where(is_mask & should_unmask.squeeze(-1), pred_tokens, x)
     
     # =================================================================
@@ -1763,10 +1786,17 @@ class Diffusion(L.LightningModule):
       timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
       dt = (1 - eps) / num_steps
       
-      # ✅ CRITICAL FIX: Initialize x0_pred with current x (Question clean, Plan/Exec masked)
-      # This matches training distribution: [xt_partially_masked, x0_with_clean_question]
-      # Without this, first step sees [x, x] (both masked) instead of [x, x_with_clean_question]
-      x0_pred = x.clone() if self.cross_attn else None
+      # ✅ CRITICAL FIX: Initialize x0_pred WITHOUT mask tokens!
+      # Training sees [xt_noisy, x0_clean] where x0 has NO mask tokens
+      # But if we do x0_pred=x.clone(), both copies have mask tokens -> WRONG!
+      # Solution: Fill x0_pred with Question (clean) + Plan/Exec (pad, not mask)
+      if self.cross_attn:
+          x0_pred = x.clone()
+          # Replace all mask tokens with pad (so model sees "uncertain but clean" reference)
+          mask_positions = (x0_pred == self.mask_index)
+          x0_pred[mask_positions] = pad_token
+      else:
+          x0_pred = None
       
       # 🔍 DEBUG: Check Question block content before sampling
       print(f"\n🔍 [_analytic_sampler] Question block content:")
