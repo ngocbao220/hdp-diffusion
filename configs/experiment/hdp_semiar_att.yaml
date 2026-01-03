@@ -1,0 +1,41 @@
+# Experiment 3: HDP + Semi-AR Sampler + HDP Attention
+# Block-wise denoising (16 tokens/block) with hierarchical attention
+
+# @package _global_
+
+defaults:
+  - override /data: hdp_overfit
+  - override /algo: bd3lm
+
+# Experiment identification
+experiment_name: hdp_semiar_att
+
+# Sampler configuration
+algo:
+  sampler: semi_ar # Uses _semi_ar_sampler (block-wise denoising)
+
+# HDP configuration
+data:
+  hdp:
+    enabled: true
+    use_hdp_attention: true # Enable hierarchical attention mask
+    question_len: 128
+    plan_len: 128
+    exec_len: 256
+    use_special_format: true
+
+# Model configuration
+model:
+  length: 512 # Total sequence length
+
+# Block size for semi-AR
+block_size: 16 # Denoise 16 tokens per stride
+
+# Sampling configuration
+sampling:
+  num_steps: 64 # Steps per block (16 tokens)
+  first_hitting: true # Enable for semi-AR
+
+# Checkpoint
+checkpointing:
+  save_dir: outputs/hdp_semiar_att

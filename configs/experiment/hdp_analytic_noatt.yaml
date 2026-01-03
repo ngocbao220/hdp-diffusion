@@ -1,0 +1,38 @@
+# Experiment 2: HDP + Analytic Sampler + NO HDP Attention
+# Parallel denoising without hierarchical attention constraints
+
+# @package _global_
+
+defaults:
+  - override /data: hdp_overfit
+  - override /algo: bd3lm
+
+# Experiment identification
+experiment_name: hdp_analytic_noatt
+
+# Sampler configuration
+algo:
+  sampler: ddpm # Uses _analytic_sampler (parallel denoising)
+
+# HDP configuration
+data:
+  hdp:
+    enabled: true
+    use_hdp_attention: false # Disable hierarchical attention mask
+    question_len: 128
+    plan_len: 128
+    exec_len: 256
+    use_special_format: true
+
+# Model configuration
+model:
+  length: 512 # Total sequence length
+
+# Sampling configuration
+sampling:
+  num_steps: 1000
+  first_hitting: false # Not applicable for analytic sampler
+
+# Checkpoint
+checkpointing:
+  save_dir: outputs/hdp_analytic_noatt

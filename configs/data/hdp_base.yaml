@@ -1,0 +1,47 @@
+# HDP-Diffusion Base Configuration
+# Hierarchical Dual-Process Diffusion with 3-block structure
+# This is the base config - use experiment configs to override
+
+name: hdp_diffusion
+train: hdp_diffusion
+valid: hdp_diffusion
+
+# Data paths (use hierarchical JSON format)
+train_path: data/gsm8k/gsm8k_overfit.json
+test_path: data/gsm8k/gsm8k_overfit.json
+
+# Tokenizer
+tokenizer_name_or_path: gpt2
+cache_dir: .cache
+
+# Data format
+wrap: false # HDP uses fixed-length blocks, no wrapping needed
+streaming: false
+
+# Hierarchical block structure
+hdp:
+  enabled: true
+  question_len: 128 # Context block
+  plan_len: 128 # Abstract reasoning block
+  exec_len: 256 # Detailed computation block
+
+  # Format configuration
+  use_special_format: true # Enable [PLAN] [EXECUTION] [ANSWER] format
+
+  # Attention configuration
+  use_hdp_attention: true # Enable hierarchical attention (override in experiment configs)
+  causal_within_block: false # Bidirectional within blocks (for diffusion)
+
+# Total sequence length
+max_length: 512 # question_len + plan_len + exec_len
+
+# Vocab - NOTE: Will be adjusted at runtime to match checkpoint
+# Training adds 4 special tokens: [PAD], [PLAN], [EXECUTION], [ANSWER]
+# Plus 1 mask token = 50262 total
+vocab_size: 50257 # GPT-2 base vocab (will become 50262 after special tokens)
+
+# Special tokens
+insert_train_eos: false
+insert_valid_eos: false
+insert_train_special: false
+insert_valid_special: false
