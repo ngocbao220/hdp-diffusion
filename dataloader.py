@@ -563,13 +563,16 @@ def get_tokenizer(config):
   
   # Ensure PAD token exists
   if tokenizer.pad_token is None:
-    tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+    tokenizer.add_special_tokens({'pad_token': '<|pad|>'})
 
   # Add HDP Special Tokens
-  special_tokens_dict = {'additional_special_tokens': ['[PLAN]', '[EXECUTION]', '[ANSWER]']}
+  # 🔧 FIX: Use <|token|> format instead of [TOKEN] to ensure single-token IDs
+  # GPT-2 tokenizer treats [...] as multiple tokens, but <|...|> is treated as special token
+  special_tokens_dict = {'additional_special_tokens': ['<|plan|>', '<|execution|>', '<|answer|>']}
   num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
   if num_added_toks > 0:
     print(f"✅ Tokenizer: Added {num_added_toks} special tokens: {special_tokens_dict['additional_special_tokens']}")
+    print(f"   Token IDs: <|pad|>={tokenizer.pad_token_id}, <|plan|>={tokenizer.additional_special_tokens_ids[0]}, <|execution|>={tokenizer.additional_special_tokens_ids[1]}, <|answer|>={tokenizer.additional_special_tokens_ids[2]}")
   
   return tokenizer
 

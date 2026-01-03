@@ -36,14 +36,14 @@ def _load_from_checkpoint(config, tokenizer):
       config, tokenizer=tokenizer).to('cuda')
 
   # 🔧 FIX: Add special tokens to tokenizer to match training
-  # Training adds: [PAD], [PLAN], [EXECUTION], [ANSWER]
+  # Training adds: <|pad|>, <|plan|>, <|execution|>, <|answer|>
   # GPT-2 base vocab: 50257
   # After adding special tokens: 50257 + 4 = 50261
   # But checkpoint might have 50262 if extra token was added during training
   if not tokenizer.pad_token:
-    tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+    tokenizer.add_special_tokens({'pad_token': '<|pad|>'})
   
-  special_tokens_dict = {'additional_special_tokens': ['[PLAN]', '[EXECUTION]', '[ANSWER]']}
+  special_tokens_dict = {'additional_special_tokens': ['<|plan|>', '<|execution|>', '<|answer|>']}
   num_added = tokenizer.add_special_tokens(special_tokens_dict)
   
   # Store marker IDs for hard position anchoring
@@ -57,7 +57,7 @@ def _load_from_checkpoint(config, tokenizer):
   
   print(f"\n🔧 Added {num_added} special tokens to tokenizer")
   print(f"   New tokenizer vocab_size: {len(tokenizer)}")
-  print(f"   Special tokens: [PAD]={tokenizer.pad_token_id}, [PLAN]={tokenizer.additional_special_tokens_ids[0]}, [EXECUTION]={tokenizer.additional_special_tokens_ids[1]}, [ANSWER]={tokenizer.additional_special_tokens_ids[2]}")
+  print(f"   Special tokens: <|pad|>={tokenizer.pad_token_id}, <|plan|>={tokenizer.additional_special_tokens_ids[0]}, <|execution|>={tokenizer.additional_special_tokens_ids[1]}, <|answer|>={tokenizer.additional_special_tokens_ids[2]}")
 
   # Extract vocab_size from checkpoint BEFORE creating model
   import torch
@@ -241,7 +241,7 @@ def generate_samples(config, logger, tokenizer):
     return text_samples
 
 def _display_hdp_samples(samples, validation_data, tokenizer):
-    """Display HDP samples with question context, clearly separating [PLAN], [EXECUTION], [ANSWER]."""
+    """Display HDP samples with question context, clearly separating <|plan|>, <|execution|>, <|answer|>."""
     print("\n" + "="*100)
     print("HDP-DIFFUSION SAMPLES WITH QUESTION CONTEXT")
     print("="*100)
@@ -249,9 +249,9 @@ def _display_hdp_samples(samples, validation_data, tokenizer):
     for idx, sample_text in enumerate(samples[:5]):  # Show first 5 samples
         truth = validation_data[idx] if idx < len(validation_data) else None
 
-        plan_marker = "[PLAN]"
-        exec_marker = "[EXECUTION]"
-        answer_marker = "[ANSWER]"
+        plan_marker = "<|plan|>"
+        exec_marker = "<|execution|>"
+        answer_marker = "<|answer|>"
         question = truth['question'] if truth else "N/A"
 
         print(f"\n{'─'*100}")
@@ -310,9 +310,9 @@ def _display_hdp_samples(samples, validation_data, tokenizer):
         answer = answer.replace(tokenizer.eos_token, '').strip()
 
         print(f"\n📋 QUESTION (from validation set):\n   {question}")
-        print(f"\n🧠 [PLAN]:\n   {plan}")
-        print(f"\n🔢 [EXECUTION]:\n   {execution}")
-        print(f"\n✅ [ANSWER]:\n   {answer}")
+        print(f"\n🧠 <|plan|>:\n   {plan}")
+        print(f"\n🔢 <|execution|>:\n   {execution}")
+        print(f"\n✅ <|answer|>:\n   {answer}")
 
         if truth:
             print(f"\n🏷️  GROUND TRUTH:")

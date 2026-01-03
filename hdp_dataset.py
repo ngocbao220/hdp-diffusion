@@ -43,7 +43,7 @@ class HDPDataset(Dataset):
             block_sizes: (question_len, plan_len, exec_len) in tokens
             add_special_tokens: Whether to add BOS/EOS tokens
             return_block_indices: Whether to return block_indices tensor
-            use_special_format: Whether to use [PLAN] [EXECUTION] [ANSWER] format
+            use_special_format: Whether to use <|plan|> <|execution|> <|answer|> format
         """
         self.data_path = data_path
         self.tokenizer = tokenizer
@@ -144,12 +144,12 @@ class HDPDataset(Dataset):
         
         # Build text based on format
         if self.use_special_format:
-            # Format: [PLAN] plan_text [EXECUTION] execution_text [ANSWER] answer
-            plan_text = f"[PLAN] {sample['plan']}"
-            execution_text = f"[EXECUTION] {sample['execution']}"
+            # Format: <|plan|> plan_text <|execution|> execution_text <|answer|> answer
+            plan_text = f"<|plan|> {sample['plan']}"
+            execution_text = f"<|execution|> {sample['execution']}"
             answer = sample.get('answer', '')
             if answer:
-                execution_text = f"{execution_text} [ANSWER] {answer}"
+                execution_text = f"{execution_text} <|answer|> {answer}"
         else:
             # Original format
             plan_text = sample['plan']
@@ -387,7 +387,7 @@ if __name__ == "__main__":
         print("\n" + "="*60 + "\n")
 
     print(f"Tokenizer size: {len(tokenizer)}")
-    print(f"SPECICAL TOKENS: [PAD] {tokenizer.pad_token_id}, [PLAN] {tokenizer.convert_tokens_to_ids('[PLAN]')}, [EXECUTION] {tokenizer.convert_tokens_to_ids('[EXECUTION]')}, [ANSWER] {tokenizer.convert_tokens_to_ids('[ANSWER]')}")
+    print(f"SPECIAL TOKENS: <|pad|> {tokenizer.pad_token_id}, <|plan|> {tokenizer.additional_special_tokens_ids[0]}, <|execution|> {tokenizer.additional_special_tokens_ids[1]}, <|answer|> {tokenizer.additional_special_tokens_ids[2]}")
     # 5. Thực hiện in kiểm tra mẫu đầu tiên
     print("Dataset size:", len(dataset))
     if len(dataset) > 0:
