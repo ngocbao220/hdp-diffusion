@@ -1275,8 +1275,15 @@ class Diffusion(L.LightningModule):
         prob_stay_masked = prob_stay_masked.view(-1, 1, 1)
         prob_unmask = prob_unmask.view(-1, 1, 1)
     
-    # 2. Forward pass
-    model_output = self.forward(x, curr_sigma, sample_mode=True, block_indices=block_indices)
+    # 2. Forward pass with cross_attn support
+    # ✅ CRITICAL FIX: Training uses [xt, x0], inference must do same!
+    # Use current x as best guess for x0 (since we don't have clean x0 in inference)
+    if self.cross_attn:
+        x_input = torch.cat((x, x), dim=-1)  # [xt, x_guess] like training [xt, x0]
+    else:
+        x_input = x
+    
+    model_output = self.forward(x_input, curr_sigma, sample_mode=True, block_indices=block_indices)
     
     # 3. Adaptive decoding: Greedy vs Sampling
     use_greedy = getattr(self.config.sampling, 'use_greedy_decoding', True)  # Default: greedy
@@ -1339,8 +1346,14 @@ class Diffusion(L.LightningModule):
     # 1. Get noise level
     sigma = self._sigma_from_p(self.noise(t)[1])
     
-    # 2. Forward pass
-    model_output = self.forward(x, sigma, sample_mode=True, block_indices=block_indices)
+    # 2. Forward pass with cross_attn support
+    # ✅ CRITICAL FIX: Match training which uses [xt, x0]
+    if self.cross_attn:
+        x_input = torch.cat((x, x), dim=-1)  # Use current x as guess for x0
+    else:
+        x_input = x
+    
+    model_output = self.forward(x_input, sigma, sample_mode=True, block_indices=block_indices)
     
     # 3. Adaptive decoding
     use_greedy = getattr(self.config.sampling, 'use_greedy_decoding', True)  # Default: greedy
