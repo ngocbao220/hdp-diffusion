@@ -52,8 +52,9 @@ GRAD_ACCUM=1
 # Training Hyperparameters
 MAX_STEPS=500                    # Total training steps
 WARMUP_STEPS=10                  # Warmup steps
-VAL_EVERY_N_EPOCH=200            # Validate every 200 epochs (safe frequency)
 LOG_INTERVAL=10                  # Log every N steps
+# NOTE: Validation disabled for overfit test (causes CUDA crash)
+# Use eval scripts after training: bash scripts/eval_baseline.sh
 LR=1e-4                          # Learning rate (reduced to prevent NaN)
 EMA=0.9999                       # EMA decay rate
 RESAMPLE=True                    # Resample during training
@@ -130,8 +131,7 @@ python -u main.py \
     trainer.max_steps=${MAX_STEPS} \
     trainer.accumulate_grad_batches=${GRAD_ACCUM} \
     trainer.val_check_interval=null \
-    +trainer.check_val_every_n_epoch=${VAL_EVERY_N_EPOCH} \
-    trainer.limit_val_batches=1 \
+    trainer.limit_val_batches=0 \
     trainer.num_sanity_val_steps=0 \
     trainer.log_every_n_steps=${LOG_INTERVAL} \
     trainer.devices=${DEVICES} \
