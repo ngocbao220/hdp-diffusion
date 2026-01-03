@@ -574,7 +574,7 @@ class Diffusion(L.LightningModule):
           gt_text = self.tokenizer.decode(gt_tokens[0, :50])
           pred_text = self.tokenizer.decode(pred_tokens[0, :50])
           print(f"\nGround Truth Text: {gt_text}")
-          print(f"Prediction Text  : {pred_text}")
+          print(f"Prediction Text  : {pred_text}") 
         
         # Check by block if HDP
         if block_indices is not None:
@@ -616,6 +616,9 @@ class Diffusion(L.LightningModule):
         print(f"🔍 VALIDATION SAMPLE (Epoch {self.current_epoch})")
         print(f"{'='*80}")
         
+        # Ensure model is in eval mode with EMA weights (already applied in on_validation_epoch_start)
+        self.eval()
+        
         # Get one validation batch
         val_dataloader = self.trainer.val_dataloaders
         if val_dataloader is not None:
@@ -631,7 +634,21 @@ class Diffusion(L.LightningModule):
             input_ids = batch[:1].to(self.device)
             block_indices = None
           
-          # Generate sample
+          # First check: Forward pass prediction (like validation step)
+          with torch.no_grad():
+            t = torch.randint(0, self.T, (input_ids.shape[0],), device=self.device).long()
+            log_x_t = self.log_sample_categorical(self._forward_diffusion(input_ids, t))
+            log_x0_pred = self.forward(log_x_t, t, block_indices=block_indices)
+            pred_tokens = log_x0_pred.exp().argmax(dim=-1)
+          
+          print(f"\n🔍 FORWARD PASS CHECK (t={t.item()}):")
+          forward_pred_text = self.tokenizer.decode(pred_tokens[0, :50], skip_special_tokens=False)
+          forward_gt_text = self.tokenizer.decode(input_ids[0, :50], skip_special_tokens=False)
+          print(f"   Ground Truth: {forward_gt_text}")
+          print(f"   Prediction  : {forward_pred_text}")
+          
+          # Second check: Full sampling
+          print(f"\n🔍 FULL SAMPLING CHECK:")
           with torch.no_grad():
             samples = self._sample(
               seqlen=input_ids.shape[1],
