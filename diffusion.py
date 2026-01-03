@@ -1562,14 +1562,15 @@ class Diffusion(L.LightningModule):
       question_tokens=None
   ): 
       """
-      Analytic sampler: HYBRID ALIGNMENT.
-      Try to respect tokenizer's BOS if present.
+      Analytic sampler: SHIFTED ALIGNMENT (Padding index 0).
+      Experiment: Maybe Training Data has an implicit BOS at index 0?
+      Let's put Question at Index 1.
       """
       x = self._sample_prior(n_samples, seqlen).to(self.device)
       
-      print(f"🔍 [_analytic_sampler] Starting sampling (HYBRID ALIGNMENT)")
+      print(f"🔍 [_analytic_sampler] Starting sampling (SHIFTED ALIGNMENT: Q starts at index 1)")
 
-      # Config check (giữ nguyên)
+      # HDP Config (Giữ nguyên)
       if self.use_hdp_attention:
         if not hasattr(self, 'hdp_block_sizes') or self.hdp_block_sizes is None:
           if hasattr(self.config, 'data') and hasattr(self.config.data, 'hdp'):
@@ -1594,29 +1595,39 @@ class Diffusion(L.LightningModule):
       if self.use_hdp_attention and self.hdp_block_sizes is not None:
           q_len, p_len, e_len = self.hdp_block_sizes
           
+          # Block Indices
           b_q = torch.zeros(q_len, dtype=torch.long, device=self.device)
           b_p = torch.ones(p_len, dtype=torch.long, device=self.device)
           b_e = torch.full((e_len,), 2, dtype=torch.long, device=self.device)
           block_indices = torch.cat([b_q, b_p, b_e]).unsqueeze(0).repeat(n_samples, 1)
           
+          # Question Filling
           if question_tokens is not None: 
               if question_tokens.shape[0] == 1 and n_samples > 1:
                   question_tokens = question_tokens.repeat(n_samples, 1)
               
-              # KHÔNG THÊM BOS THỦ CÔNG NỮA
-              # KHÔNG CẮT BOS NẾU CÓ
-              # Cứ để nguyên input từ tokenizer
+              # Lấy token raw (bỏ qua BOS/EOS của tokenizer nếu có)
+              # Chỉ lấy content thuần
+              q_raw = []
+              for seq in question_tokens:
+                  # Lọc bỏ PAD
+                  mask = seq != pad_token
+                  # Lọc bỏ BOS/EOS (50256)
+                  if hasattr(self.tokenizer, 'bos_token_id'): mask &= (seq != self.tokenizer.bos_token_id)
+                  if hasattr(self.tokenizer, 'eos_token_id'): mask &= (seq != self.tokenizer.eos_token_id)
+                  
+                  content = seq[mask]
+                  q_raw.append(content)
               
-              curr_q_len = question_tokens.shape[1]
+              # Fill vào x
+              # QUAN TRỌNG: Bắt đầu fill từ index 1 (để lại index 0 là PAD hoặc BOS giả)
+              x[:, 0] = pad_token # Hoặc 50256 (BOS)
               
-              if curr_q_len > q_len:
-                  q_final = question_tokens[:, :q_len]
-              else:
-                  pad_amt = q_len - curr_q_len
-                  q_final = F.pad(question_tokens, (0, pad_amt), value=pad_token)
-              
-              # Gán vào x từ index 0
-              x[:, :q_len] = q_final
+              for i, content in enumerate(q_raw):
+                  l = min(len(content), q_len - 1) # Trừ 1 slot đầu
+                  x[i, 1 : 1+l] = content[:l]
+                  # Phần còn lại là PAD
+                  x[i, 1+l : q_len] = pad_token
               
           else:
               x[:, :q_len] = pad_token
@@ -1638,8 +1649,12 @@ class Diffusion(L.LightningModule):
           t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
           x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
           
+          # Re-enforce (Shifted)
           if self.use_hdp_attention and question_tokens is not None:
-              x[:, :q_len] = q_final
+              x[:, 0] = pad_token
+              for idx, content in enumerate(q_raw):
+                  l = min(len(content), q_len - 1)
+                  x[idx, 1 : 1+l] = content[:l]
               x[:, q_len] = plan_token_id
               x[:, q_len + p_len] = exec_token_id
       
@@ -1647,7 +1662,10 @@ class Diffusion(L.LightningModule):
       x = self._denoiser_update(x=x, t=t, block_indices=block_indices)
       
       if self.use_hdp_attention and question_tokens is not None:
-          x[:, :q_len] = q_final
+          x[:, 0] = pad_token
+          for idx, content in enumerate(q_raw):
+              l = min(len(content), q_len - 1)
+              x[idx, 1 : 1+l] = content[:l]
       
       stop, x = self._check_stop_conds(x)
       if stop: return None
