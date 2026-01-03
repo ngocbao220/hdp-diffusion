@@ -1161,6 +1161,7 @@ class Diffusion(L.LightningModule):
   def _analytic_update(self, x, t, dt, block_indices=None):
     """
     Analytic update with SAFETY FILTER + ANCHORING.
+    Optimized: Filter p_x0 BEFORE calculating posterior.
     """
     # 1. Tính toán xác suất Mask (Giữ nguyên)
     curr_sigma = self._sigma_from_p(self.noise(t)[1])
@@ -1180,72 +1181,96 @@ class Diffusion(L.LightningModule):
     # 2. Lấy dự đoán từ Model
     p_x0 = self.get_score(x, curr_sigma, block_indices=block_indices)
     
-    # 3. Tính Posterior (TRƯỚC KHI filter)
-    probs = p_x0 * prob_unmask
-    probs[..., self.mask_index] = prob_stay_masked.squeeze(-1)
+    # =================================================================
+    # 🛡️ SAFETY FILTER (Làm sạch p_x0 TRƯỚC khi tính toán tiếp)
+    # =================================================================
+    # 1. Cấm model đoán ra chính Mask Token (tránh vòng lặp)
+    p_x0[..., self.mask_index] = 0.0
     
-    # =================================================================
-    # 🛡️ SAFETY FILTER (Sau khi tính posterior, cấm các token độc hại)
-    # =================================================================
-    # Cấm PAD token (không được generate PAD)
+    # 2. Cấm PAD token (50257)
     pad_token_id = 50257
     if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
         pad_token_id = self.tokenizer.pad_token_id
-    probs[..., pad_token_id] = 0.0
+    p_x0[..., pad_token_id] = 0.0
 
-    # Renormalize sau khi filter
-    probs = probs / (probs.sum(dim=-1, keepdim=True) + 1e-8)
+    # 3. Renormalize: Chia lại xác suất cho các token đúng (ví dụ [PLAN])
+    # Điều này giúp xác suất của token đúng tăng lên, model sẽ tự tin unmask hơn
+    p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
     # =================================================================
+
+    # 3. Tính Posterior (Sau khi p_x0 đã sạch)
+    probs = p_x0 * prob_unmask
+    probs[..., self.mask_index] = prob_stay_masked.squeeze(-1)
     
     # 4. Sampling
     x_new = _sample_categorical(probs)
     is_mask = (x == self.mask_index)
     x_out = torch.where(is_mask, x_new, x)
     
-    # Note: Markers were initialized at the start of sampling
-    # Model has learned to generate markers from training data
-    # No need to force them at every step
+    # =================================================================
+    # 🥇 CRITICAL: Force markers at block boundaries (ALWAYS)
+    # =================================================================
+    if self.use_hdp_attention and self.hdp_block_sizes is not None:
+        q_len, p_len, e_len = self.hdp_block_sizes
+        
+        # Get marker token IDs
+        plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
+        exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
+        
+        # Force markers at every step
+        if x_out.shape[1] > q_len:
+            x_out[:, q_len] = plan_token_id
+        if x_out.shape[1] > (q_len + p_len):
+            x_out[:, q_len + p_len] = exec_token_id
+    # =================================================================
     
     return x_out
 
 
   def _denoiser_update(self, x, t, block_indices=None):
     """
-    Final denoising step: Simplified version.
-    Directly samples from the model's predicted x0 distribution.
-    Removes dependency on _transp_transition and _staggered_score.
+    Final denoising step: Simplified version + Safety + Anchoring.
     """
     # 1. Lấy độ nhiễu hiện tại
     sigma = self._sigma_from_p(self.noise(t)[1])
     
-    # 2. Lấy dự đoán của model (P(x0 | xt))
-    # Hàm này trả về xác suất đã qua softmax/nucleus
+    # 2. Lấy dự đoán của model
     p_x0 = self.get_score(x, sigma, block_indices=block_indices)
     
     # =================================================================
-    # 🛡️ SAFETY FILTER (Giữ nguyên để chống PAD/MASK)
+    # 🛡️ SAFETY FILTER
     # =================================================================
     # Cấm Mask
     p_x0[..., self.mask_index] = 0.0
     
-    # Cấm PAD (50257)
+    # Cấm PAD
     pad_id = 50257
     if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
         pad_id = self.tokenizer.pad_token_id
     p_x0[..., pad_id] = 0.0
     
-    # Renormalize (Quan trọng)
+    # Renormalize
     p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
     # =================================================================
     
-    # 3. Sampling trực tiếp từ p_x0
+    # 3. Sampling trực tiếp
     samples = _sample_categorical(p_x0)
     
-    # Note: Markers initialized at start, model learned to generate them
-    # No need to force at final step
+    # =================================================================
+    # 🥇 CRITICAL: Force markers in final step too
+    # =================================================================
+    if self.use_hdp_attention and self.hdp_block_sizes is not None:
+        q_len, p_len, e_len = self.hdp_block_sizes
+        plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
+        exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
+        
+        if samples.shape[1] > q_len:
+            samples[:, q_len] = plan_token_id
+        if samples.shape[1] > (q_len + p_len):
+            samples[:, q_len + p_len] = exec_token_id
+    # =================================================================
     
     return samples
-
   def _sample_t(
       self, batch_dims, device, sampling_eps_min, sampling_eps_max, block_size=None):
     if block_size is None:
