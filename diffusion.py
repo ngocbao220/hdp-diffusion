@@ -465,6 +465,7 @@ class Diffusion(L.LightningModule):
     return logits
 
   def _sedd_parameterization(self, logits, xt, sigma):
+    sigma = torch.clamp(sigma, min=-30.0, max=30.0)
     esigm1_log = torch.where(
       sigma < 0.5,
       torch.expm1(sigma),
@@ -1254,6 +1255,7 @@ class Diffusion(L.LightningModule):
     """
     # Use the global _sample_categorical function
     # Convert logits to probabilities
+    logits = torch.clamp(logits, min=-30.0, max=30.0)
     probs = logits.exp()
     return _sample_categorical(probs)
 
@@ -1276,6 +1278,7 @@ class Diffusion(L.LightningModule):
                           sigma_t,
                           sample_mode=True).to(torch.float64)
         p_x0 = p_x0[:, -self.block_size:]
+      p_x0 = torch.clamp(p_x0, min=1e-6, max=1.0 - 1e-6)
       p_x0 = p_x0.exp()
       p_x0 = self._nucleus_sample(p_x0)
 
@@ -1329,7 +1332,7 @@ class Diffusion(L.LightningModule):
           x[:, :i + 1][:, -context_len:],
           None,
           store_kv=self.config.sampling.kv_cache)[:, -1:].to(torch.float64)
-    
+        next_logits = torch.clamp(next_logits, min=-30.0, max=30.0)
         next_logits = next_logits.exp()
         next_logits = self._nucleus_sample(next_logits).log()
         y = (next_logits[:, -1] + noise).argmax(-1)
@@ -1541,6 +1544,7 @@ class Diffusion(L.LightningModule):
     ).to(torch.float64)
     
     if self.config.sampling.nucleus_p == 1.0:
+        model_output = torch.clamp(model_output, min=-30.0, max=30.0)
         return model_output.exp()
     
     model_output = model_output - model_output.logsumexp(-1, keepdim=True)
@@ -1679,6 +1683,7 @@ class Diffusion(L.LightningModule):
     # ================================================================
     if sampling_mode == 'bd3lm':
         # BD3-LM: Categorical sampling (baseline)
+        logits = torch.clamp(logits, min=-30.0, max=30.0)
         p_x0 = logits.to(torch.float64).exp()
         
         # Safety: remove mask and pad from distribution
@@ -1696,6 +1701,7 @@ class Diffusion(L.LightningModule):
         
     elif sampling_mode == 'hdp':
         # HDP: Categorical sampling (fair comparison)
+        logits = torch.clamp(logits, min=-30.0, max=30.0)
         p_x0 = logits.to(torch.float64).exp()
         
         # Renormalize (safety filters already applied)
@@ -1854,6 +1860,7 @@ class Diffusion(L.LightningModule):
     
     if sampling_mode == 'bd3lm':
         # BD3-LM: Categorical sampling (baseline)
+        model_output = torch.clamp(model_output, min=-30.0, max=30.0)
         p_x0 = model_output.to(torch.float64).exp()
         
         # Safety filters
@@ -1867,6 +1874,7 @@ class Diffusion(L.LightningModule):
         samples = _sample_categorical(p_x0)
         
     elif sampling_mode == 'hdp':
+        model_output = torch.clamp(model_output, min=-30.0, max=30.0)
         p_x0 = model_output.to(torch.float64).exp()
         
         # ✅ Use instance variables with safety checks
@@ -1919,7 +1927,7 @@ class Diffusion(L.LightningModule):
         
         # Greedy where confident, sample where uncertain
         greedy_samples = logits.argmax(dim=-1)
-        
+        logits = torch.clamp(logits, min=-30.0, max=30.0)
         p_x0 = logits.to(torch.float64).exp()
         p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
         sampled = _sample_categorical(p_x0)
@@ -2207,6 +2215,7 @@ class Diffusion(L.LightningModule):
       log_score[masked_indices],
       -1,
       words_that_were_masked[..., None]).squeeze(-1)
+    log_score[masked_indices] = torch.clamp(log_score[masked_indices], min=-30.0, max=30.0)
     score = log_score[masked_indices].exp()
     if self.mask_index == self.vocab_size - 1:
       pos_term = score[:, :-1].sum(dim=-1)
