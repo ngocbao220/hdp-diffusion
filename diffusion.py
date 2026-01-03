@@ -1248,9 +1248,13 @@ class Diffusion(L.LightningModule):
     
     return score
 
-  def _analytic_update(self, x, t, dt, block_indices=None):
+  def _analytic_update(self, x, t, dt, block_indices=None, x0_pred=None):
     """
     Analytic update with adaptive decoding strategy.
+    
+    Args:
+        x0_pred: Best guess of clean x0 (from previous step prediction)
+                 Used for cross_attn to match training [xt, x0]
     
     Strategy:
       - Greedy (default): argmax - for HDP math reasoning (correctness)
@@ -1272,6 +1276,7 @@ class Diffusion(L.LightningModule):
         self._analytic_update_debug_printed = True
         use_greedy = getattr(self.config.sampling, 'use_greedy_decoding', True)
         print(f"\n🔍 [_analytic_update] Decoding Strategy: {'GREEDY (argmax)' if use_greedy else 'SAMPLING (categorical)'}")
+        print(f"   cross_attn: {self.cross_attn}")
         print(f"   t: {t[0, 0].item():.4f}, dt: {dt:.6f}")
         print(f"   curr_sigma: {curr_sigma[0].item():.4f}, next_sigma: {next_sigma[0].item():.4f}")
         print(f"   prob_stay_masked: {prob_stay_masked.flatten()[0].item():.6f}")
@@ -1282,10 +1287,11 @@ class Diffusion(L.LightningModule):
         prob_unmask = prob_unmask.view(-1, 1, 1)
     
     # 2. Forward pass with cross_attn support
-    # ✅ CRITICAL FIX: Training uses [xt, x0], inference must do same!
-    # Use current x as best guess for x0 (since we don't have clean x0 in inference)
+    # ✅ CRITICAL: Match training [xt_noisy, x0_clean]
     if self.cross_attn:
-        x_input = torch.cat((x, x), dim=-1)  # [xt, x_guess] like training [xt, x0]
+        # Use x0_pred (best guess from prev step) if available, else use x itself
+        x0_ref = x0_pred if x0_pred is not None else x
+        x_input = torch.cat((x, x0_ref), dim=-1)  # [xt, x0_pred] like training [xt, x0]
     else:
         x_input = x
     
@@ -1747,9 +1753,19 @@ class Diffusion(L.LightningModule):
       timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
       dt = (1 - eps) / num_steps
       
+      # Track x0_pred for cross_attn (match training [xt, x0])
+      x0_pred = None
+      
       for i in tqdm(range(num_steps), desc='HDP Sampling'):
           t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
-          x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
+          
+          # Pass x0_pred from previous step (or None for first step)
+          x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices, x0_pred=x0_pred)
+          
+          # Update x0_pred: Use current x with mask replaced by predictions
+          # This will be used as "clean reference" for next step
+          if self.cross_attn:
+              x0_pred = x.clone()  # Best guess so far
           
           # Re-enforce (Giữ nguyên cấu trúc)
           if self.use_hdp_attention and question_tokens is not None:
