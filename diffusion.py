@@ -1133,7 +1133,12 @@ class Diffusion(L.LightningModule):
           samples = torch.cat(samples, dim=0) 
           return self. tokenizer.batch_decode(samples)
       
-      if self.sampler == 'semi_ar':
+      # ✅ HDP OVERRIDE: Always use analytic sampler for hierarchical denoising
+      # semi_ar sampler doesn't support sequential block denoising (Question → Plan → Execution)
+      is_hdp = (hasattr(self.config.data, 'hdp') and 
+                self.config.data.hdp.get('use_hdp_attention', False))
+      
+      if self.sampler == 'semi_ar' and not is_hdp:
           for _ in range(self.config.sampling. num_sample_batches):
               sample_i, num_tries = None, 0
               while sample_i is None: 
@@ -1318,16 +1323,19 @@ class Diffusion(L.LightningModule):
     x_out = torch.where(is_mask & should_unmask.squeeze(-1), pred_tokens, x)
     
     # =================================================================
-    # 🥇 CRITICAL: Force markers at block boundaries (ALWAYS)
+    # 🥇 CRITICAL: HDP Structure Enforcement
     # =================================================================
     if self.use_hdp_attention and self.hdp_block_sizes is not None:
         q_len, p_len, e_len = self.hdp_block_sizes
         
-        # Get marker token IDs
+        # 1. FREEZE Question block (already clean from input, don't modify!)
+        # Copy Question tokens from original x to x_out
+        x_out[:, :q_len] = x[:, :q_len]
+        
+        # 2. Force markers at block boundaries (ALWAYS)
         plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
         exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
         
-        # Force markers at every step
         if x_out.shape[1] > q_len:
             x_out[:, q_len] = plan_token_id
         if x_out.shape[1] > (q_len + p_len):
@@ -1377,10 +1385,15 @@ class Diffusion(L.LightningModule):
         samples = _sample_categorical(p_x0)
     
     # =================================================================
-    # 🥇 CRITICAL: Force markers in final step too
+    # 🥇 CRITICAL: HDP Structure Enforcement (Final step)
     # =================================================================
     if self.use_hdp_attention and self.hdp_block_sizes is not None:
         q_len, p_len, e_len = self.hdp_block_sizes
+        
+        # 1. FREEZE Question block
+        samples[:, :q_len] = x[:, :q_len]
+        
+        # 2. Force markers
         plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
         exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
         
