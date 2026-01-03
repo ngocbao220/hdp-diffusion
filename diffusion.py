@@ -1181,13 +1181,16 @@ class Diffusion(L.LightningModule):
         print(f"   Top 5 tokens: {stag_at_mask.topk(5).indices.tolist()}")
         print(f"   Top 5 scores: {stag_at_mask.topk(5).values.tolist()}")
         print(f"   Score[mask_index={self.mask_index}]: {stag_at_mask[self.mask_index].item():.4f}")
-        print(f"   Sum of probs: {stag_at_mask.sum().item():.6f}")
-        print(f"   ✅ stag_score is already a valid probability distribution!")
+        print(f"   Sum of stag_score: {stag_at_mask.sum().item():.6f}")
     
-    # ✅ CRITICAL: stag_score is ALREADY a proper probability distribution!
-    # DO NOT multiply by _transp_transition (that's for SEDD, not BD3-LM)
-    # DO NOT normalize (stag_score already sums to 1)
-    probs = stag_score
+    # ✅ CORRECT: Combine stag_score with transition probabilities (Bayesian update)
+    # p(x_s | x_t) ∝ p(x_0 | x_t) * p(x_s | x_0, t)
+    #   stag_score = p(x_0 | x_t)  [model prediction]
+    #   _transp_transition = p(x_s | x_0, t)  [diffusion transition]
+    probs = stag_score * self._transp_transition(x, dsigma)
+    
+    # Normalize to get valid probability distribution
+    probs = probs / probs.sum(dim=-1, keepdim=True)
     
     # Sample new tokens
     x_new = _sample_categorical(probs)
