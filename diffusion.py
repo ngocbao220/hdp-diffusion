@@ -1212,6 +1212,21 @@ class Diffusion(L.LightningModule):
     # - Nếu token đang mask (is_mask=True) -> Cập nhật bằng x_new (có thể ra token mới hoặc vẫn là mask)
     x_out = torch.where(is_mask, x_new, x)
     
+    # 🥇 HARD POSITION ANCHOR: Force markers at block boundaries
+    if block_indices is not None and hasattr(self.config.model, 'hdp_block_sizes'):
+      q_len, p_len, e_len = self.config.model.hdp_block_sizes
+      plan_marker_pos = q_len
+      exec_marker_pos = q_len + p_len
+      
+      # Get marker token IDs
+      plan_token_id = getattr(self.config.model, 'plan_token_id', None)
+      exec_token_id = getattr(self.config.model, 'execution_token_id', None)
+      
+      if plan_token_id is not None:
+        x_out[:, plan_marker_pos] = plan_token_id
+      if exec_token_id is not None:
+        x_out[:, exec_marker_pos] = exec_token_id
+    
     return x_out
 
 
@@ -1369,6 +1384,17 @@ class Diffusion(L.LightningModule):
       else:
         question_mask = (block_indices == 0)
       xt = torch.where(question_mask, x0, xt)
+      
+      # 🥇 HARD POSITION ANCHOR: Never mask marker tokens at block boundaries
+      # Markers should always be visible to teach model the structure
+      if hasattr(self.config.model, 'hdp_block_sizes'):
+        q_len, p_len, e_len = self.config.model.hdp_block_sizes
+        plan_marker_pos = q_len  # First token of Plan block
+        exec_marker_pos = q_len + p_len  # First token of Exec block
+        
+        # Force markers to stay unmasked
+        xt[:, plan_marker_pos] = x0[:, plan_marker_pos]
+        xt[:, exec_marker_pos] = x0[:, exec_marker_pos]
     
     x_input = xt
     if self.cross_attn:

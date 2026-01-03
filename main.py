@@ -46,6 +46,11 @@ def _load_from_checkpoint(config, tokenizer):
   special_tokens_dict = {'additional_special_tokens': ['[PLAN]', '[EXECUTION]', '[ANSWER]']}
   num_added = tokenizer.add_special_tokens(special_tokens_dict)
   
+  # Store marker IDs for hard position anchoring
+  config.model.plan_token_id = tokenizer.additional_special_tokens_ids[0]
+  config.model.execution_token_id = tokenizer.additional_special_tokens_ids[1]
+  config.model.answer_token_id = tokenizer.additional_special_tokens_ids[2]
+  
   print(f"\n🔧 Added {num_added} special tokens to tokenizer")
   print(f"   New tokenizer vocab_size: {len(tokenizer)}")
   print(f"   Special tokens: [PAD]={tokenizer.pad_token_id}, [PLAN]={tokenizer.additional_special_tokens_ids[0]}, [EXECUTION]={tokenizer.additional_special_tokens_ids[1]}, [ANSWER]={tokenizer.additional_special_tokens_ids[2]}")
