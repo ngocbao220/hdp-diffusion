@@ -1195,19 +1195,26 @@ class Diffusion(L.LightningModule):
     # Sample new tokens
     x_new = _sample_categorical(probs)
     
-    # ✅ CRITICAL: Selective unmasking based on confidence
-    # At step 0 (high noise), keep most tokens masked
-    # Only unmask tokens where model is confident (high prob for non-mask token)
+    # ✅ CORRECT: Unmask based on TIMESTEP, not model confidence
+    # Early steps (t≈1): Keep most tokens masked
+    # Late steps (t≈0): Unmask most tokens
     
-    # Get probability of NOT staying masked
-    # Safety: clamp to [0, 1] and handle potential NaN/Inf
-    unmask_confidence = 1.0 - probs[..., self.mask_index].clamp(0, 1)
-    unmask_confidence = torch.nan_to_num(unmask_confidence, nan=0.0, posinf=1.0, neginf=0.0)
+    # Calculate unmask probability based on timestep
+    # As t decreases from 1→0, unmask_prob increases from ~0→1
+    t_value = t.squeeze()  # Get scalar t
+    if t_value.ndim > 0:
+        t_value = t_value.mean()  # Average if batch
     
-    # Bernoulli sampling: unmask with probability = unmask_confidence
-    should_unmask = torch.bernoulli(unmask_confidence).bool()
+    # Unmask probability increases as we approach t=0
+    # Using sigmoid to get smooth transition
+    unmask_prob = 1.0 - t_value  # Simple linear: 0 at t=1, 1 at t=0
     
-    # For non-mask positions, always keep original token
+    # Apply Bernoulli sampling: each token has unmask_prob chance to unmask
+    should_unmask = torch.bernoulli(
+        torch.full_like(x, unmask_prob, dtype=torch.float32)
+    ).bool()
+    
+    # Only apply to mask tokens (non-mask tokens stay unchanged)
     is_mask_token = (x == self.mask_index)
     
     # Final decision: unmask only if (1) was mask AND (2) should unmask
@@ -1249,18 +1256,20 @@ class Diffusion(L.LightningModule):
       print(f"   First 10 i values: {i[0, :10].tolist()}")
     
     # Create transition matrix
-    # For regular tokens: edge[i] has probability at position i
-    # For mask_index: allow transition to ANY token (uniform distribution)
+    # For regular tokens: edge[i] has high probability at position i
+    # For mask_index: uniform over ALL tokens (allow any transition)
     edge = torch.exp(-sigma) * F.one_hot(
       i, num_classes=self.vocab_size)
     
-    # Fix: When i == mask_index, set edge to ones (allow all transitions)
-    # Original code only added scalar, not broadcast across vocab
+    # When i == mask_index, use uniform distribution (not all 1s!)
+    # This allows mask to transition to any token with equal probability
     mask_positions = (i == self.mask_index)
     if mask_positions.any():
-      # Set edge to 1.0 for all vocab positions when input is mask_index
-      edge[mask_positions] = torch.ones(
-        self.vocab_size, device=edge.device, dtype=edge.dtype)
+      # Uniform distribution: 1/vocab_size for each token
+      uniform_prob = (1 - torch.exp(-sigma)) / (self.vocab_size - 1)
+      edge[mask_positions] = uniform_prob.expand(
+        mask_positions.sum(), self.vocab_size
+      )
     
     return edge
 
