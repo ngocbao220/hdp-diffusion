@@ -557,30 +557,37 @@ class Diffusion(L.LightningModule):
         # ✅ FIX: Use ACTUAL training forward pass, not sample mode!
         # Training uses cross_attn: model([xt, x0], sigma) where xt is noisy
         x0 = batch['input_ids']
+        attention_mask = batch.get('attention_mask', None)
         
-        # Create noisy input at low noise level (t=0.01 → almost clean)
-        t_low = torch.full((x0.shape[0], x0.shape[1]), 0.01, device=self.device)
-        _, p_low = self.noise(t_low)
-        # Add small noise (use default sampling bounds to avoid resample errors)
-        xt_low = self.q_xt(x0, p_low, sampling_eps_min=1e-3, sampling_eps_max=1.0)
+        # Create noisy input at MEDIUM noise level (t=0.5 → model must denoise, not copy!)
+        # ⚠️ IMPORTANT: t=0.01 is too low - model can just copy from x0 in cross_attn mode!
+        t_medium = torch.full((x0.shape[0], x0.shape[1]), 0.5, device=self.device)
+        _, p_medium = self.noise(t_medium)
+        # Add medium noise (use default sampling bounds to avoid resample errors)
+        xt_medium = self.q_xt(x0, p_medium, sampling_eps_min=1e-3, sampling_eps_max=1.0)
         
         # Compute sigma from p
-        sigma_low = self._sigma_from_p(p_low[:, 0].unsqueeze(-1))
+        sigma_medium = self._sigma_from_p(p_medium[:, 0].unsqueeze(-1))
         
         # Use training mode: [xt, x0] concatenation if cross_attn
         if self.cross_attn:
-          x_input = torch.cat((xt_low, x0), dim=-1)
+          x_input = torch.cat((xt_medium, x0), dim=-1)
         else:
-          x_input = xt_low
+          x_input = xt_medium
         
         # Forward pass (same as training)
-        model_output = self.forward(x_input, sigma=sigma_low, block_indices=block_indices)
+        model_output = self.forward(x_input, sigma=sigma_medium, block_indices=block_indices)
         pred_tokens = model_output.argmax(dim=-1)
         
         # Compare with ground truth (EXCLUDE PAD tokens!)
         gt_tokens = x0
-        # ⚠️ FIX: Only count non-PAD tokens (PAD = mask_index)
-        non_pad_mask = (gt_tokens != self.mask_index)
+        # ✅ FIX: Use attention_mask from dataset (correct PAD detection!)
+        # attention_mask: 1 for content, 0 for PAD
+        if attention_mask is not None:
+          non_pad_mask = attention_mask.bool()
+        else:
+          # Fallback: assume all tokens are content
+          non_pad_mask = torch.ones_like(gt_tokens, dtype=torch.bool)
         if non_pad_mask.sum() > 0:
           accuracy = (pred_tokens[non_pad_mask] == gt_tokens[non_pad_mask]).float().mean().item()
           num_content_tokens = non_pad_mask.sum().item()
