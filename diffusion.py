@@ -1159,87 +1159,58 @@ class Diffusion(L.LightningModule):
     return score
 
   def _analytic_update(self, x, t, dt, block_indices=None):
-    """Analytic update step with optional HDP mask."""
-    sigma_t = self._sigma_from_p(self.noise(t)[1])
-    sigma_s = self._sigma_from_p(self.noise(t - dt)[1])
-    dsigma = sigma_t - sigma_s
-    score = self.get_score(x, sigma_t, block_indices=block_indices)
+    """
+    Analytic update using correct D3PM/MDLM posterior formula.
+    P(xt-1 | xt, x0) formula for absorbing diffusion.
+    """
+    # 1. Tính toán xác suất Mask tại bước t và bước s (bước tiếp theo)
+    # P(masked at t) = 1 - exp(-sigma_t)
+    curr_sigma = self._sigma_from_p(self.noise(t)[1])
+    next_sigma = self._sigma_from_p(self.noise(t - dt)[1])
     
-    # 🔍 DEBUG: Check score for mask_index positions (first step only)
-    if not hasattr(self, '_analytic_update_debug_printed'):
-      self._analytic_update_debug_printed = True
-      mask_positions = (x == self.mask_index)
-      if mask_positions.any():
-        print(f"\n🔍 [_analytic_update] FIRST STEP DEBUG:")
-        print(f"   sigma_t: {sigma_t[0, 0].item():.4f}, sigma_s: {sigma_s[0, 0].item():.4f}")
-        print(f"   dsigma: {dsigma[0, 0].item():.4f}, exp(dsigma): {dsigma[0, 0].exp().item():.6f}")
-        print(f"   x has {mask_positions.sum().item()} mask_index tokens")
-        print(f"   mask_index: {self.mask_index}")
+    p_t = 1 - torch.exp(-curr_sigma)
+    p_s = 1 - torch.exp(-next_sigma)
+    
+    # Clip để tránh chia cho 0 (dù sigma rất lớn thì p_t ~ 1)
+    p_t = torch.clamp(p_t, min=1e-6)
+    
+    # 2. Tính xác suất chuyển đổi
+    # Xác suất giữ nguyên Mask: P(stay_mask) = P(masked at s) / P(masked at t)
+    prob_stay_masked = p_s / p_t
+    
+    # Xác suất Unmask thành token w: P(unmask) = 1 - P(stay_mask)
+    prob_unmask = 1.0 - prob_stay_masked
+    
+    # Broadcast đúng shape [Batch, 1, 1] cho phép nhân
+    if prob_stay_masked.ndim > 0:
+        prob_stay_masked = prob_stay_masked.view(-1, 1, 1)
+        prob_unmask = prob_unmask.view(-1, 1, 1)
         
-        # Check score at first mask position
-        first_mask_pos = mask_positions[0].nonzero()[0].item()
-        score_at_mask = score[0, first_mask_pos]  # (vocab_size,)
-        print(f"   Score at first mask position ({first_mask_pos}):")
-        print(f"     Top 5 tokens: {score_at_mask.topk(5).indices.tolist()}")
-        print(f"     Top 5 scores: {score_at_mask.topk(5).values.tolist()}")
-        print(f"     Score[0]: {score_at_mask[0].item():.4f}")
-        print(f"     Score[mask_index={self.mask_index}]: {score_at_mask[self.mask_index].item():.4f}")
+    # 3. Lấy dự đoán từ Model P(x0 | xt)
+    # Hàm get_score đã trả về xác suất đã qua softmax/nucleus (sum=1)
+    p_x0 = self.get_score(x, curr_sigma, block_indices=block_indices)
     
-    stag_score = self._staggered_score(score, dsigma)
+    # 4. Tính toán phân phối xác suất cho bước tiếp theo (Posterior)
+    # Với các vị trí đang là Mask:
+    # P(next = Mask) = prob_stay_masked
+    # P(next = Token w) = p_x0(w) * prob_unmask
     
-    # DEBUG: Check stag_score after adding mask probability
-    if not hasattr(self, '_stag_score_debug_printed'):
-      self._stag_score_debug_printed = True
-      mask_positions = (x == self.mask_index)
-      if mask_positions.any():
-        first_mask_pos = mask_positions[0].nonzero()[0].item()
-        stag_at_mask = stag_score[0, first_mask_pos]
-        print(f"\n🔍 [_staggered_score] AFTER applying mask probability:")
-        print(f"   Top 5 tokens: {stag_at_mask.topk(5).indices.tolist()}")
-        print(f"   Top 5 scores: {stag_at_mask.topk(5).values.tolist()}")
-        print(f"   Score[mask_index={self.mask_index}]: {stag_at_mask[self.mask_index].item():.4f}")
-        print(f"   Sum of stag_score: {stag_at_mask.sum().item():.6f}")
+    probs = p_x0 * prob_unmask
     
-    # ✅ CORRECT: Combine stag_score with transition probabilities (Bayesian update)
-    # p(x_s | x_t) ∝ p(x_0 | x_t) * p(x_s | x_0, t)
-    #   stag_score = p(x_0 | x_t)  [model prediction]
-    #   _transp_transition = p(x_s | x_0, t)  [diffusion transition]
-    probs = stag_score * self._transp_transition(x, dsigma)
+    # Gán xác suất cho mask token
+    # Lưu ý: Cần đảm bảo mask_index không bị lẫn xác suất từ p_x0
+    probs[..., self.mask_index] = prob_stay_masked.squeeze(-1)
     
-    # Normalize to get valid probability distribution
-    probs = probs / probs.sum(dim=-1, keepdim=True)
-    
-    # Sample new tokens
+    # 5. Sampling
+    # Sample toàn bộ (để tận dụng GPU), nhưng chỉ cập nhật vị trí đang là Mask
     x_new = _sample_categorical(probs)
     
-    # ✅ CORRECT: Unmask based on TIMESTEP, not model confidence
-    # Early steps (t≈1): Keep most tokens masked
-    # Late steps (t≈0): Unmask most tokens
+    is_mask = (x == self.mask_index)
     
-    # Calculate unmask probability based on timestep
-    # As t decreases from 1→0, unmask_prob increases from ~0→1
-    t_value = t.squeeze()  # Get scalar t
-    if t_value.ndim > 0:
-        t_value = t_value.mean()  # Average if batch
-    
-    # Unmask probability increases as we approach t=0
-    # Using sigmoid to get smooth transition
-    unmask_prob = 1.0 - t_value  # Simple linear: 0 at t=1, 1 at t=0
-    
-    # Apply Bernoulli sampling: each token has unmask_prob chance to unmask
-    should_unmask = torch.bernoulli(
-        torch.full_like(x, unmask_prob, dtype=torch.float32)
-    ).bool()
-    
-    # Only apply to mask tokens (non-mask tokens stay unchanged)
-    is_mask_token = (x == self.mask_index)
-    
-    # Final decision: unmask only if (1) was mask AND (2) should unmask
-    x_out = torch.where(
-        is_mask_token & should_unmask,
-        x_new,  # Replace with sampled token
-        x       # Keep original
-    )
+    # Logic Absorbing:
+    # - Nếu token đã unmask (is_mask=False) -> Giữ nguyên (x)
+    # - Nếu token đang mask (is_mask=True) -> Cập nhật bằng x_new (có thể ra token mới hoặc vẫn là mask)
+    x_out = torch.where(is_mask, x_new, x)
     
     return x_out
 
