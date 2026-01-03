@@ -73,6 +73,14 @@ def _load_from_checkpoint(config, tokenizer):
           dummy_tokens = [f'<|dummy_{i}|>' for i in range(num_missing)]
           tokenizer.add_tokens(dummy_tokens)
           print(f"   ✅ Added {num_missing} dummy tokens to tokenizer")
+      
+      # ✅ CRITICAL: Set mask_token to prevent auto-increment in __init__
+      # GPT-2 doesn't have mask_token, so Diffusion.__init__ adds +1 to vocab_size
+      # To prevent this, we set the last token as mask_token (which is checkpoint's mask_index)
+      if not tokenizer.mask_token:
+        tokenizer.mask_token = tokenizer.convert_ids_to_tokens(checkpoint_vocab_size - 1)
+        tokenizer.mask_token_id = checkpoint_vocab_size - 1
+        print(f"   ✅ Set mask_token_id = {tokenizer.mask_token_id} to prevent vocab_size auto-increment")
         
         # ⚠️ DON'T update config.model.vocab_size here!
         # Model will be loaded from checkpoint which already has correct vocab_size
