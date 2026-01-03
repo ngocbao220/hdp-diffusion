@@ -128,6 +128,7 @@ CUDA_LAUNCH_BLOCKING=1 TORCH_USE_CUDA_DSA=1 python -u main.py \
     trainer.max_steps=${MAX_STEPS} \
     trainer.accumulate_grad_batches=${GRAD_ACCUM} \
     trainer.val_check_interval=null \
+    +trainer.check_val_every_n_epoch=999999 \
     trainer.limit_val_batches=0 \
     trainer.num_sanity_val_steps=0 \
     trainer.log_every_n_steps=${LOG_INTERVAL} \
@@ -137,6 +138,8 @@ CUDA_LAUNCH_BLOCKING=1 TORCH_USE_CUDA_DSA=1 python -u main.py \
     trainer.precision=${PRECISION} \
     trainer.gradient_clip_val=${GRAD_CLIP} \
     +sampling.disable_val_sampling=true \
+    +callbacks.checkpoint_monitor.monitor=train/loss \
+    +callbacks.checkpoint_monitor.mode=min \
     wandb.name=${EXP_NAME}-${SAMPLER}-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S) \
     wandb.project=hdp-diffusion-experiments \
     wandb.tags=[hdp,gsm8k,${SAMPLER},bs${BLOCK_SIZE}] \
