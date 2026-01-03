@@ -22,6 +22,7 @@ hdp:
   enabled: false
   use_hdp_attention: false
   use_special_format: false
+  causal_within_block: false # Required field even when disabled
 
 # Sequence length
 max_length: 512

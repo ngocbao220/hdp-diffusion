@@ -15,6 +15,13 @@ experiment_name: baseline_bd3lm
 algo:
   sampler: semi_ar # Standard BD3-LM semi-autoregressive sampler
 
+# Data configuration - use baseline format
+data:
+  hdp:
+    enabled: false
+    use_hdp_attention: false
+    use_special_format: false
+
 # Model configuration
 model:
   length: 512 # Standard sequence length
