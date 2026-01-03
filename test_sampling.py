@@ -36,8 +36,9 @@ def test_sampling_fix(config):
     x = torch.randint(0, 50000, (B, L)).cuda()
     x[x < 256] = model.mask_index  # Simulate masking
     
-    sigma = torch.tensor([[2.0]]).cuda()
-    t = sigma * torch.ones(B, 1).cuda()
+    sigma = torch.full((B, 1), 2.0, device='cuda')
+    
+    t = sigma
     
     if model.use_hdp_attention and model.hdp_block_sizes:
         q_len, p_len, e_len = model.hdp_block_sizes
