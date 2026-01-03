@@ -160,3 +160,22 @@ else
 fi
 
 echo "=========================================="
+
+
+# ============================================
+# Test trained model quality (not just logic)
+# ============================================
+echo ""
+echo "To test TRAINED MODEL (not just logic), use main.py:"
+echo ""
+echo "python main.py mode=sample_eval \\"
+echo "  model=tiny \\"
+echo "  model.length=512 \\"
+echo "  algo=bd3lm \\"
+echo "  data=hdp_overfit \\"
+echo "  data.hdp.use_hdp_attention=true \\"
+echo "  eval.checkpoint_path=/content/hdp-diffusion/outputs/hdp_diffusion/2026.01.03/161254/outputs/hdp_overfit_test/checkpoints/best.ckpt \\"
+echo "  +sampling.sampling_mode=hdp \\"
+echo "  sampling.num_steps=100 \\"
+echo "  loader.eval_batch_size=1"
+echo ""

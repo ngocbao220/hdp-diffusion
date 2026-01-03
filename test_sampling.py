@@ -1,13 +1,14 @@
 """
 Test script to validate the sampling fix.
 Run this BEFORE training to ensure logic is correct.
+NOTE: This tests CODE LOGIC only, not trained model quality.
 """
 
 import torch
 import hydra
 from omegaconf import OmegaConf
 
-@hydra.main(config_path="configs", config_name="config")
+@hydra.main(version_base=None, config_path="configs", config_name="config")
 def test_sampling_fix(config):
     print("="*80)
     print("🧪 TESTING SAMPLING FIX")
@@ -37,7 +38,7 @@ def test_sampling_fix(config):
     x[x < 256] = model.mask_index  # Simulate masking
     
     sigma = torch.full((B, 1), 2.0, device='cuda')
-    
+
     t = sigma
     
     if model.use_hdp_attention and model.hdp_block_sizes:
@@ -146,18 +147,21 @@ def test_sampling_fix(config):
         try:
             # Test with original shape
             x_test = x.clone()
-            out1 = model.forward(x_test, sigma, block_indices=block_indices)
+            out1 = model.forward(x_test, sigma, sample_mode=True, block_indices=block_indices)
             print(f"   Input shape: {x_test.shape}, block_indices: {block_indices.shape}")
             print(f"   ✅ PASS: Original shape works")
             
             # Test with cross_attn concatenation
             x_test_cat = torch.cat((x, x), dim=-1)
-            out2 = model.forward(x_test_cat, sigma, block_indices=block_indices)
+            # Model will auto-duplicate block_indices internally
+            out2 = model.forward(x_test_cat, sigma, sample_mode=True, block_indices=block_indices)
             print(f"   Input shape: {x_test_cat.shape}, block_indices: {block_indices.shape}")
-            print(f"   ✅ PASS: Cross-attn shape works")
+            print(f"   ✅ PASS: Cross-attn shape works (model auto-duplicates block_indices)")
             
         except Exception as e:
             print(f"   ❌ FAIL: Shape handling error: {e}")
+            import traceback
+            traceback.print_exc()
     else:
         print(f"   ⏭️  SKIP: No block_indices or cross_attn=False")
     
