@@ -1131,6 +1131,14 @@ class Diffusion(L.LightningModule):
     self.metrics.valid_nlls.update(losses.nlls, losses.token_mask)
     return losses.loss
 
+  def on_before_optimizer_step(self, optimizer):
+    # Check for NaN gradients before optimizer step
+    for name, param in self.named_parameters():
+      if param.grad is not None:
+        if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+          print(f"\n⚠️  NaN/Inf gradient in {name}! Zeroing...")
+          param.grad.zero_()
+  
   def configure_optimizers(self):
     # TODO(yair): Lightning currently giving this warning when using `fp16`:
     #  "Detected call of `lr_scheduler.step()` before `optimizer.step()`. "
@@ -1589,10 +1597,13 @@ class Diffusion(L.LightningModule):
 
     p_t = 1.0 - torch.exp(-curr_sigma)
     p_s = 1.0 - torch.exp(-next_sigma)
-    p_t = torch.clamp(p_t, min=1e-6)
+    p_t = torch.clamp(p_t, min=1e-6, max=1.0 - 1e-6)
+    p_s = torch.clamp(p_s, min=1e-6, max=1.0 - 1e-6)
 
     prob_stay_masked = p_s / p_t
+    prob_stay_masked = torch.clamp(prob_stay_masked, min=0.0, max=1.0)
     prob_unmask = 1.0 - prob_stay_masked
+    prob_unmask = torch.clamp(prob_unmask, min=0.0, max=1.0)
 
     if prob_unmask.ndim > 0:
         prob_unmask = prob_unmask.view(-1, 1)
@@ -1633,6 +1644,11 @@ class Diffusion(L.LightningModule):
         sample_mode=True,
         block_indices=block_indices
     )
+    
+    # NaN/Inf check - CRITICAL
+    if torch.isnan(logits).any() or torch.isinf(logits).any():
+        print(f"\n⚠️  NaN/Inf in logits at step! Clamping...")
+        logits = torch.nan_to_num(logits, nan=0.0, posinf=10.0, neginf=-10.0)
 
     # ================================================================
     # 4. Safety filters (ONLY for HDP modes)
