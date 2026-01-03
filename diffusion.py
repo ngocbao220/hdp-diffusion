@@ -1174,12 +1174,32 @@ class Diffusion(L.LightningModule):
     prob_stay_masked = p_s / p_t
     prob_unmask = 1.0 - prob_stay_masked
     
+    # 🔍 DEBUG: Print first step probabilities
+    if not hasattr(self, '_analytic_update_debug_printed'):
+        self._analytic_update_debug_printed = True
+        print(f"\n🔍 [_analytic_update] FIRST STEP DEBUG:")
+        print(f"   t: {t[0, 0].item():.4f}, dt: {dt:.6f}")
+        print(f"   curr_sigma: {curr_sigma[0].item():.4f}, next_sigma: {next_sigma[0].item():.4f}")
+        print(f"   p_t: {p_t[0].item():.4f}, p_s: {p_s[0].item():.4f}")
+        print(f"   prob_stay_masked: {prob_stay_masked.flatten()[0].item():.6f}")
+        print(f"   prob_unmask: {prob_unmask.flatten()[0].item():.6f}")
+    
     if prob_stay_masked.ndim > 0:
         prob_stay_masked = prob_stay_masked.view(-1, 1, 1)
         prob_unmask = prob_unmask.view(-1, 1, 1)
         
     # 2. Lấy dự đoán từ Model
     p_x0 = self.get_score(x, curr_sigma, block_indices=block_indices)
+    
+    # 🔍 DEBUG: Check model prediction before filter
+    if not hasattr(self, '_analytic_update_p_x0_debug'):
+        self._analytic_update_p_x0_debug = True
+        mask_prob = p_x0[0, 128, self.mask_index].item()
+        top_5_probs, top_5_idx = p_x0[0, 128].topk(5)
+        print(f"\n🔍 [_analytic_update] Model prediction at position 128 (BEFORE filter):")
+        print(f"   p_x0[mask_index={self.mask_index}]: {mask_prob:.6f}")
+        print(f"   Top 5 tokens: {top_5_idx.tolist()}")
+        print(f"   Top 5 probs: {top_5_probs.tolist()}")
     
     # =================================================================
     # 🛡️ SAFETY FILTER (Làm sạch p_x0 TRƯỚC khi tính toán tiếp)
@@ -1192,7 +1212,18 @@ class Diffusion(L.LightningModule):
     if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
         pad_token_id = self.tokenizer.pad_token_id
     p_x0[..., pad_token_id] = 0.0
-
+    # 🔍 DEBUG: Check final probs before sampling
+    if not hasattr(self, '_analytic_update_probs_debug'):
+        self._analytic_update_probs_debug = True
+        final_mask_prob = probs[0, 128, self.mask_index].item()
+        top_5_probs, top_5_idx = probs[0, 128].topk(5)
+        print(f"\n🔍 [_analytic_update] Final probs at position 128 (AFTER adding stay_masked):")
+        print(f"   probs[mask_index]: {final_mask_prob:.6f}")
+        print(f"   Top 5 tokens: {top_5_idx.tolist()}")
+        print(f"   Top 5 probs: {top_5_probs.tolist()}")
+        print(f"   Probs sum: {probs[0, 128].sum().item():.6f}")
+    
+    # 
     # 3. Renormalize: Chia lại xác suất cho các token đúng (ví dụ [PLAN])
     # Điều này giúp xác suất của token đúng tăng lên, model sẽ tự tin unmask hơn
     p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
@@ -1531,15 +1562,15 @@ class Diffusion(L.LightningModule):
       question_tokens=None
   ): 
       """
-      Analytic sampler: DIRECT ALIGNMENT (NO BOS).
-      Matches Training Data: Index 0 = First word of Question ("Janet").
+      Analytic sampler: STRICT ALIGNMENT.
+      Ensures Question text is raw (No BOS, No EOS) to match Training Data exact positional embedding.
       """
-      # 1. Khởi tạo nhiễu
+      # 1. Khởi tạo
       x = self._sample_prior(n_samples, seqlen).to(self.device)
       
-      print(f"🔍 [_analytic_sampler] Starting sampling (DIRECT ALIGNMENT - NO BOS)")
+      print(f"🔍 [_analytic_sampler] Starting sampling (STRICT ALIGNMENT)")
 
-      # 2. HDP Config Check (Giữ nguyên)
+      # 2. HDP Config (Giữ nguyên)
       if self.use_hdp_attention:
         if not hasattr(self, 'hdp_block_sizes') or self.hdp_block_sizes is None:
           if hasattr(self.config, 'data') and hasattr(self.config.data, 'hdp'):
@@ -1551,7 +1582,6 @@ class Diffusion(L.LightningModule):
           else:
               self.use_hdp_attention = False
         
-        # Scaling logic
         if self.use_hdp_attention and self.hdp_block_sizes is not None:
           expected_len = sum(self.hdp_block_sizes)
           if expected_len != seqlen:
@@ -1566,45 +1596,74 @@ class Diffusion(L.LightningModule):
       block_indices = None
       q_len, p_len, e_len = 0, 0, 0
       
-      # Lấy PAD token
-      pad_token = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 50257
-      # Kiểm tra nếu tokenizer tự thêm BOS thì lấy ID để lọc bỏ
-      bos_token = self.tokenizer.bos_token_id 
-      
+      pad_token = 50257
+      if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
+          pad_token = self.tokenizer.pad_token_id
+
+      # Các token cần lọc bỏ
+      tokens_to_strip = {
+          50256, # EOS / BOS (GPT2 default)
+          self.tokenizer.bos_token_id,
+          self.tokenizer.eos_token_id
+      }
+      # Loại bỏ None
+      tokens_to_strip = {t for t in tokens_to_strip if t is not None}
+
       if self.use_hdp_attention and self.hdp_block_sizes is not None:
           q_len, p_len, e_len = self.hdp_block_sizes
           
-          # 3.1 Tạo Block Indices
+          # 3.1 Block Indices
           b_q = torch.zeros(q_len, dtype=torch.long, device=self.device)
           b_p = torch.ones(p_len, dtype=torch.long, device=self.device)
           b_e = torch.full((e_len,), 2, dtype=torch.long, device=self.device)
           block_indices = torch.cat([b_q, b_p, b_e]).unsqueeze(0).repeat(n_samples, 1)
           
-          # 3.2 Điền Question vào (NO BOS shift)
+          # 3.2 Điền Question (CLEANSED)
           if question_tokens is not None: 
               if question_tokens.shape[0] == 1 and n_samples > 1:
                   question_tokens = question_tokens.repeat(n_samples, 1)
               
-              # Nếu input token có BOS ở đầu, CẮT BỎ nó đi để khớp với Training Data
-              if bos_token is not None and question_tokens[0, 0] == bos_token:
-                  q_content = question_tokens[:, 1:]
-              else:
-                  q_content = question_tokens
-
-              curr_q_len = q_content.shape[1]
+              # --- CLEANSE LOGIC ---
+              # Lọc bỏ BOS/EOS ở đầu và cuối chuỗi
+              # Chuyển về list để xử lý dễ hơn
+              cleaned_batch = []
+              for seq in question_tokens:
+                  # Lấy các token không phải PAD (để tránh lọc nhầm PAD ở giữa nếu có)
+                  # Thực ra input từ tokenizer thường dồn token về trái, PAD về phải.
+                  # Ta chỉ cần lọc đầu và đuôi của phần content.
+                  
+                  # Cắt bỏ PAD ở cuối để lấy content thực
+                  non_pad_idxs = (seq != pad_token).nonzero().flatten()
+                  if len(non_pad_idxs) == 0:
+                      cleaned_batch.append(seq[:0]) # Empty
+                      continue
+                      
+                  start, end = non_pad_idxs[0], non_pad_idxs[-1]
+                  content = seq[start : end+1]
+                  
+                  # Strip BOS/EOS từ content
+                  if content[0].item() in tokens_to_strip:
+                      content = content[1:]
+                  if len(content) > 0 and content[-1].item() in tokens_to_strip:
+                      content = content[:-1]
+                  
+                  cleaned_batch.append(content)
               
-              # Cắt hoặc Pad
-              if curr_q_len > q_len:
-                  q_final = q_content[:, :q_len]
-              else:
-                  pad_amt = q_len - curr_q_len
-                  q_final = F.pad(q_content, (0, pad_amt), value=pad_token)
-              
-              # ✅ CORRECT ALIGNMENT: Gán thẳng từ Index 0
-              x[:, :q_len] = q_final
+              # Re-pad và gán vào x
+              for i, content in enumerate(cleaned_batch):
+                  curr_len = len(content)
+                  limit = q_len # Không trừ 1 nữa, dùng full q_len
+                  
+                  if curr_len > limit:
+                      to_write = content[:limit]
+                      x[i, :limit] = to_write
+                  else:
+                      x[i, :curr_len] = content
+                      # Phần còn lại là PAD (đã fill từ step 1 hoặc mặc định 0?)
+                      # Step 1 fill bằng Mask (50261). Ta cần fill PAD (50257).
+                      x[i, curr_len:q_len] = pad_token
               
           else:
-              # Nếu không có question, điền PAD toàn bộ
               x[:, :q_len] = pad_token
 
           # 3.3 Anchoring Markers
@@ -1617,8 +1676,8 @@ class Diffusion(L.LightningModule):
               x[:, q_len + p_len] = exec_token_id
 
       else:
-          # Fallback non-HDP
-          x[:, 0] = self.tokenizer.bos_token_id if self.tokenizer.bos_token_id is not None else 50256
+          # Fallback
+          x[:, 0] = self.tokenizer.bos_token_id if self.tokenizer.bos_token_id else 50256
       
       timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
       dt = (1 - eps) / num_steps
@@ -1629,11 +1688,16 @@ class Diffusion(L.LightningModule):
 
           x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
           
-          # Re-enforce (Giữ nguyên cấu trúc KHÔNG BOS)
+          # Re-enforce Question & Markers
           if self.use_hdp_attention and question_tokens is not None:
-              x[:, :q_len] = q_final       # Question từ 0
-              x[:, q_len] = plan_token_id  # Plan từ 128
-              x[:, q_len + p_len] = exec_token_id # Exec từ 256
+             # Re-write cleaned question
+             for idx, content in enumerate(cleaned_batch):
+                 l = min(len(content), q_len)
+                 x[idx, :l] = content
+                 x[idx, l:q_len] = pad_token
+             
+             x[:, q_len] = plan_token_id
+             x[:, q_len + p_len] = exec_token_id
       
       # 5. Final
       t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
@@ -1641,7 +1705,10 @@ class Diffusion(L.LightningModule):
       
       # Final clean-up
       if self.use_hdp_attention and question_tokens is not None:
-          x[:, :q_len] = q_final
+         for idx, content in enumerate(cleaned_batch):
+             l = min(len(content), q_len)
+             x[idx, :l] = content
+             x[idx, l:q_len] = pad_token
       
       stop, x = self._check_stop_conds(x)
       if stop:
