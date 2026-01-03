@@ -1353,27 +1353,37 @@ class Diffusion(L.LightningModule):
         # Sample from posterior
         pred_tokens = _sample_categorical(probs)
     
-    # 4. Confidence-based unmasking (progressive refinement)
-    # Only unmask tokens when model is confident enough
-    # This enables gradual refinement instead of immediate greedy decoding
+    # 4. Confidence-gated unmasking + Early step content blocking
+    # ✅ FIX #2: Only unmask if logit is high enough (not just argmax)
+    # ✅ FIX #3: At early steps (high noise), force everything to MASK
     
-    if use_greedy:
-        # Get model confidence (max probability)
-        probs = model_output.exp()
-        max_probs, _ = probs.max(dim=-1)  # (batch, seq)
-        
-        # Define confidence threshold (higher = more conservative)
-        # Early steps: low threshold (unmask more), Late steps: high threshold (only unmask very confident)
-        # This creates progressive refinement
-        confidence_threshold = 0.5 + 0.3 * (curr_sigma.mean().item() / 10.0)  # 0.5 to 0.8 based on sigma
-        is_confident = max_probs > confidence_threshold
+    # Check if we're in early steps (high noise = no content allowed)
+    SIGMA_CONTENT_START = 3.5  # Below this sigma, start allowing content
+    avg_sigma = curr_sigma.mean().item()
+    
+    if avg_sigma > SIGMA_CONTENT_START:
+        # Early steps: ONLY MASK allowed, no content yet
+        pred_tokens = torch.full_like(x, self.mask_index)
+        print(f"   🚫 Early step (sigma={avg_sigma:.2f} > {SIGMA_CONTENT_START}): Forcing all MASK")
     else:
-        # For sampling mode, always allow unmasking based on prob_unmask
-        is_confident = torch.ones_like(x, dtype=torch.bool)
+        # Later steps: Allow content, but only if confident enough
+        # Confidence check: logit threshold (not probability!)
+        CONF_THRESHOLD = 5.0  # Higher = more conservative (try 4.0-6.0)
+        top_logits, _ = model_output.max(dim=-1)  # (batch, seq)
+        can_unmask = top_logits > CONF_THRESHOLD
+        
+        if not hasattr(self, '_conf_debug'):
+            self._conf_debug = True
+            print(f"   ✅ Content allowed (sigma={avg_sigma:.2f})")
+            print(f"   Confidence threshold: {CONF_THRESHOLD}")
+            print(f"   Tokens passing threshold: {can_unmask.sum().item()}/{can_unmask.numel()}")
     
-    # Combine: only unmask if (1) random threshold AND (2) model confident
+    # Combine: (1) random prob_unmask AND (2) confidence check
     should_unmask = (torch.rand(x.shape, device=x.device) < prob_unmask.squeeze(-1).squeeze(-1))
-    should_unmask = should_unmask & is_confident
+    
+    # Only apply confidence gate if not in early steps
+    if avg_sigma <= SIGMA_CONTENT_START:
+        should_unmask = should_unmask & can_unmask
     
     # ✅ FIX #2: FREEZE MARKER POSITIONS - NEVER UNMASK THEM!
     # Markers must remain fixed at block boundaries
