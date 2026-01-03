@@ -548,7 +548,7 @@ class Diffusion(L.LightningModule):
              sync_dist=True)
     
     # 🔍 DEBUG: Check if model learned anything
-    if self.global_step % 100 == 0 and self.global_step > 0:
+    if self.global_step % 100 == 0:
       with torch.no_grad():
         print("\n" + "="*80)
         print(f"🔍 [training_step] MODEL LEARNING CHECK at step {self.global_step}")
