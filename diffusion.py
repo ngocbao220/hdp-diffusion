@@ -1312,8 +1312,13 @@ class Diffusion(L.LightningModule):
     # ✅ HDP: Keep Question block CLEAN (no masking) since it's the input!
     # Only mask Plan (block 1) and Execution (block 2)
     if block_indices is not None:
-      question_mask = (block_indices == 0)  # Block 0 = Question
-      xt = torch.where(question_mask.unsqueeze(0), x0, xt)
+      # Handle both 1D [seq_len] and 2D [batch, seq_len] block_indices
+      if block_indices.ndim == 1:
+        # Expand to [batch, seq_len]
+        question_mask = (block_indices == 0).unsqueeze(0).expand_as(x0)
+      else:
+        question_mask = (block_indices == 0)
+      xt = torch.where(question_mask, x0, xt)
     
     x_input = xt
     if self.cross_attn:
