@@ -960,8 +960,19 @@ class Diffusion(L.LightningModule):
       self.log(name=k,  value=v.compute(), on_step=False,
               on_epoch=True, sync_dist=True)
     
+    # Clear CUDA cache before validation sampling to prevent memory accumulation
+    if torch.cuda.is_available():
+      torch.cuda.empty_cache()
+    
     # Generate sample during validation to check quality
-    if not self.trainer.sanity_checking and self.T > 0:  # Check T is valid
+    # Skip if early in training (first 50 epochs) to save time/memory
+    # Can also disable with config.sampling.disable_val_sampling=True for overfit tests
+    disable_val_sampling = getattr(self.config.sampling, 'disable_val_sampling', False)
+    
+    if (not self.trainer.sanity_checking and 
+        self.T > 0 and 
+        self.current_epoch >= 50 and 
+        not disable_val_sampling):  # Check T is valid
       try:
         print(f"\n{'='*80}")
         print(f"🔍 VALIDATION SAMPLE (Epoch {self.current_epoch})")
@@ -1028,6 +1039,12 @@ class Diffusion(L.LightningModule):
           print(f"\n{'='*80}\n")
       except Exception as e:
         print(f"⚠️  Failed to generate validation sample: {e}")
+        import traceback
+        traceback.print_exc()
+      finally:
+        # Always clear CUDA cache after sampling to prevent memory leak
+        if torch.cuda.is_available():
+          torch.cuda.empty_cache()
     
     if self.ema:
       self.ema.restore(self._get_parameters())

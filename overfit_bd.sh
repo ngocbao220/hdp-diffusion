@@ -87,7 +87,25 @@ echo "=========================================="
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate hdp
 
+# Enable CUDA debugging
+export CUDA_LAUNCH_BLOCKING=1
+export TORCH_USE_CUDA_DSA=1
+
+echo "🐛 CUDA Debugging enabled:"
+echo "   CUDA_LAUNCH_BLOCKING=1"
+echo "   TORCH_USE_CUDA_DSA=1"
+echo ""
+
+echo "⚙️  Configuration Check:"
+echo "   Data: ${DATA_CONFIG}"
+echo "   Model: ${MODEL_SIZE}"
+echo "   Seq Length: ${SEQ_LEN}"
+echo "   Block Size: ${BLOCK_SIZE}"
+echo "   Algo: ${ALGO}"
+echo ""
+
 # Run BD3-LM BASELINE training with configurable parameters
+echo "🚀 Starting training..."
 python -u main.py \
     mode=${MODE} \
     model=${MODEL_SIZE} \
@@ -119,6 +137,7 @@ python -u main.py \
     +trainer.strategy=${STRATEGY} \
     trainer.precision=${PRECISION} \
     trainer.gradient_clip_val=${GRAD_CLIP} \
+    +sampling.disable_val_sampling=true \
     wandb.name=${EXP_NAME}-${SAMPLER}-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S) \
     wandb.project=bd3lm-baseline-experiments \
     wandb.tags=[baseline,gsm8k,${SAMPLER},bs${BLOCK_SIZE}] \

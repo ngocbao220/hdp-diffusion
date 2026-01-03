@@ -134,6 +134,7 @@ python -u main.py \
     +trainer.strategy=${STRATEGY} \
     trainer.precision=${PRECISION} \
     trainer.gradient_clip_val=${GRAD_CLIP} \
+    +sampling.disable_val_sampling=true \
     wandb.name=${EXP_NAME}-${SAMPLER}-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S) \
     wandb.project=hdp-diffusion-experiments \
     wandb.tags=[hdp,gsm8k,${SAMPLER},bs${BLOCK_SIZE}] \
