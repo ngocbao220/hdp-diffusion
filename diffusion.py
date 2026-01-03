@@ -444,75 +444,165 @@ class Diffusion(L.LightningModule):
     return hdp_mask
 
   def forward(self, x, sigma, sample_mode=False, store_kv=False, block_indices=None):
-    """Returns log score.
+    """Returns log score with FIXED block_indices handling.
     
     Args:
-        x: Input tensor
+        x: Input tensor [B, L] or [B, 2*L] (if cross_attn)
         sigma: Noise level
         sample_mode: Whether in sampling mode
         store_kv: Whether to store key-value cache
-        block_indices: HDP block assignments
+        block_indices: HDP block assignments [B, L_original]
+    
+    Returns:
+        logits: Log probabilities [B, L, vocab_size]
     """
-    # Only print debug info once at the start of sampling (not every step!)
+    
+    # ================================================================
+    # 1. Debug logging (first call only)
+    # ================================================================
     if sample_mode and not hasattr(self, '_forward_debug_printed'): 
         self._forward_debug_printed = True
         print(f"\n🔍 [Diffusion.forward] First call in sample mode:")
         print(f"   x.shape: {x.shape}")
+        print(f"   sigma: {sigma.shape if torch.is_tensor(sigma) else sigma}")
         print(f"   use_hdp_attention: {self.use_hdp_attention}")
-        print(f"   block_indices: {'present' if block_indices is not None else 'None'}")
+        print(f"   cross_attn: {self.cross_attn}")
         if block_indices is not None:
             print(f"   block_indices.shape: {block_indices.shape}")
             print(f"   unique blocks: {torch.unique(block_indices).tolist()}")
 
+    # ================================================================
+    # 2. Process sigma (noise level)
+    # ================================================================
     sigma = self._process_sigma(sigma)
     
-    # Create HDP attention mask if enabled and block_indices provided
+    # ================================================================
+    # 3. CRITICAL FIX: Block Indices Shape Handling
+    # ================================================================
     hdp_mask = None
     if self.use_hdp_attention and block_indices is not None:
-      # For BD3-LM cross attention, x is concatenated (xt, x0), so block_indices needs to be duplicated
-      if self.cross_attn and x.shape[1] == block_indices.shape[1] * 2:
-        block_indices_full = torch.cat((block_indices, block_indices), dim=1)
-      else:
-        block_indices_full = block_indices
-      
-      # Create HDP attention bias for SDPA
-      hdp_mask = self._create_hdp_bd3lm_mask(
-        block_indices=block_indices_full,
-        seq_len=x.shape[1],
-        device=x.device
-      )
-    elif sample_mode and not hasattr(self, '_forward_debug_printed2'):
-        self._forward_debug_printed2 = True
-        print(f"   ⚠️  HDP mask not created (missing block_indices or HDP disabled)")
-    
-    with torch.amp.autocast('cuda', dtype=torch.float32):
-      if self.config.algo.name == 'bd3lm':
-        logits = self.backbone(x, sigma,
-                              store_kv=store_kv,
-                              sample_mode=sample_mode,
-                              hdp_mask=hdp_mask)
-      elif self.config.algo.name == 'ar':
-        if self.config.algo.backbone == 'hf_dit':
-          logits = self.backbone(x, None)     
+        # Determine expected sequence length based on cross_attn
+        if self.cross_attn:
+            # x = [xt, x0_pred], so original seq_len = x.shape[1] // 2
+            original_seq_len = x.shape[1] // 2
+            
+            # Check if block_indices needs duplication
+            if block_indices.shape[1] == original_seq_len:
+                # Need to duplicate for [xt, x0]
+                block_indices_full = torch.cat((block_indices, block_indices), dim=1)
+                
+                if sample_mode and not hasattr(self, '_forward_shape_debug1'):
+                    self._forward_shape_debug1 = True
+                    print(f"   ℹ️  Duplicated block_indices: {block_indices.shape} -> {block_indices_full.shape}")
+            
+            elif block_indices.shape[1] == x.shape[1]:
+                # Already correct shape (pre-duplicated)
+                block_indices_full = block_indices
+                
+                if sample_mode and not hasattr(self, '_forward_shape_debug2'):
+                    self._forward_shape_debug2 = True
+                    print(f"   ℹ️  Block_indices already correct shape: {block_indices.shape}")
+            
+            else:
+                # Shape mismatch - this is an error
+                raise ValueError(
+                    f"❌ Block indices shape mismatch!\n"
+                    f"   x.shape: {x.shape}\n"
+                    f"   block_indices.shape: {block_indices.shape}\n"
+                    f"   cross_attn=True, expected block_indices to be either:\n"
+                    f"     - {(block_indices.shape[0], original_seq_len)} (will duplicate), or\n"
+                    f"     - {x.shape} (already correct)"
+                )
+        
         else:
-          logits = self.backbone(x, sigma, sample_mode=sample_mode, store_kv=store_kv)
-        logits[:, :, self.mask_index] = self.neg_infinity
-        logits = logits.log_softmax(-1)
-      else:
-        logits = self.backbone(x, sigma)
+            # No cross_attn: block_indices should match x directly
+            if block_indices.shape[1] != x.shape[1]:
+                raise ValueError(
+                    f"❌ Block indices shape mismatch!\n"
+                    f"   x.shape: {x.shape}\n"
+                    f"   block_indices.shape: {block_indices.shape}\n"
+                    f"   cross_attn=False, expected block_indices.shape[1] == x.shape[1]"
+                )
+            block_indices_full = block_indices
+        
+        # ================================================================
+        # 4. Create HDP+BD3LM Combined Attention Mask
+        # ================================================================
+        hdp_mask = self._create_hdp_bd3lm_mask(
+            block_indices=block_indices_full,
+            seq_len=x.shape[1],
+            device=x.device
+        )
+        
+        if sample_mode and not hasattr(self, '_forward_hdp_mask_printed'):
+            self._forward_hdp_mask_printed = True
+            print(f"   ✅ HDP mask created: shape {hdp_mask.shape}")
+            print(f"      Mask dtype: {hdp_mask.dtype}")
+            print(f"      Mask device: {hdp_mask.device}")
+            
+            # Check mask values
+            num_masked = (hdp_mask == float('-inf')).sum().item()
+            total_positions = hdp_mask.numel()
+            print(f"      Masked positions: {num_masked}/{total_positions} ({num_masked/total_positions*100:.1f}%)")
 
+    # ================================================================
+    # 5. Model Forward Pass
+    # ================================================================
+    with torch.amp.autocast('cuda', dtype=torch.float32):
+        if self.config.algo.name == 'bd3lm':
+            # BD3-LM with optional HDP mask
+            logits = self.backbone(
+                x, 
+                sigma,
+                store_kv=store_kv,
+                sample_mode=sample_mode,
+                hdp_mask=hdp_mask  # Pass combined mask
+            )
+            
+        elif self.config.algo.name == 'ar':
+            # Autoregressive model
+            if self.config.algo.backbone == 'hf_dit':
+                logits = self.backbone(x, None)
+            else:
+                logits = self.backbone(
+                    x, 
+                    sigma, 
+                    sample_mode=sample_mode, 
+                    store_kv=store_kv
+                )
+            
+            # Mask out the mask token
+            logits[:, :, self.mask_index] = self.neg_infinity
+            logits = logits.log_softmax(-1)
+        
+        else:
+            # Other backbones (SEDD, etc.)
+            logits = self.backbone(x, sigma)
+
+    # ================================================================
+    # 6. Crop output if cross_attn (CRITICAL!)
+    # ================================================================
     if self.cross_attn:
-      x = x[:, :self.config.model.length]
-      logits = logits[:, :self.config.model.length]  # ✅ Crop logits too!
-    if self.parameterization == 'subs':
-      return self._subs_parameterization(logits=logits,
-                                      xt=x)
-    elif self.parameterization == 'sedd':
-      return self._sedd_parameterization(logits=logits,
-                                        xt=x,
-                                        sigma=sigma)
-    return logits
+        # Model sees [xt, x0_pred] but we only need logits for xt part
+        x = x[:, :self.config.model.length]
+        logits = logits[:, :self.config.model.length]
+        
+        if sample_mode and not hasattr(self, '_forward_crop_debug'):
+            self._forward_crop_debug = True
+            print(f"   ℹ️  Cropped logits for cross_attn: {logits.shape}")
     
+    # ================================================================
+    # 7. Apply parameterization
+    # ================================================================
+    if self.parameterization == 'subs':
+        return self._subs_parameterization(logits=logits, xt=x)
+    
+    elif self.parameterization == 'sedd':
+        return self._sedd_parameterization(logits=logits, xt=x, sigma=sigma)
+    
+    # Default: return raw logits (log probabilities)
+    return logits
+  
   def on_train_epoch_start(self):
     self.backbone.train()
     self.noise.train()
@@ -1114,27 +1204,30 @@ class Diffusion(L.LightningModule):
       self, seqlen=None, num_steps=None, eps=1e-5, 
       batch_size_per_gpu=None, question_tokens=None
   ):
-      """Generate samples from the model. 
+      """Generate samples from the model with FIXED logic.
       
       Args: 
           seqlen: Sequence length
-          num_steps:  Number of denoising steps
-          eps:  Minimum noise level
-          batch_size_per_gpu:  Batch size per GPU
-          question_tokens:  (batch, q_len) - Optional question tokens for HDP conditional generation
+          num_steps: Number of denoising steps
+          eps: Minimum noise level
+          batch_size_per_gpu: Batch size per GPU
+          question_tokens: (batch, q_len) - Optional question tokens for HDP
       
       Returns:
           List of decoded text samples
       """
-      # DEBUG: Check which sampler will be used
-
-      
       if seqlen is None:
           seqlen = self.config.model.length
       if batch_size_per_gpu is None: 
           batch_size_per_gpu = self.config.loader.eval_batch_size
+      if num_steps is None:
+          num_steps = self.config.algo.T
+      
       samples = []
       
+      # ================================================================
+      # AR Sampler (unchanged)
+      # ================================================================
       if self.parameterization == 'ar':
           for _ in range(self.config.sampling.num_sample_batches):
               sample_i, num_tries = None, 0
@@ -1142,19 +1235,21 @@ class Diffusion(L.LightningModule):
                   num_tries += 1
                   sample_i = self._ar_sampler(batch_size_per_gpu)
                   if num_tries > 10: 
-                      raise ValueError('Sampling failed.')
+                      raise ValueError('AR sampling failed.')
               samples.append(sample_i)
-              self.metrics.gen_nfes. append(self.config.model.length)
+              self.metrics.gen_nfes.append(self.config.model.length)
           samples = torch.cat(samples, dim=0) 
-          return self. tokenizer.batch_decode(samples)
+          return self.tokenizer.batch_decode(samples)
       
-      # ✅ HDP OVERRIDE: Always use analytic sampler for hierarchical denoising
-      # semi_ar sampler doesn't support sequential block denoising (Question → Plan → Execution)
+      # ================================================================
+      # HDP OVERRIDE: Always use analytic sampler for hierarchical denoising
+      # ================================================================
       is_hdp = (hasattr(self.config.data, 'hdp') and 
                 self.config.data.hdp.get('use_hdp_attention', False))
       
+      # Semi-AR sampler (only for non-HDP)
       if self.sampler == 'semi_ar' and not is_hdp:
-          for _ in range(self.config.sampling. num_sample_batches):
+          for _ in range(self.config.sampling.num_sample_batches):
               sample_i, num_tries = None, 0
               while sample_i is None: 
                   num_tries += 1
@@ -1163,31 +1258,60 @@ class Diffusion(L.LightningModule):
                       num_strides=(seqlen // self.block_size), 
                       num_steps=num_steps,
                       seqlen=seqlen,
-                      question_tokens=question_tokens)  # ✅ Pass question tokens
+                      question_tokens=question_tokens
+                  )
                   if num_tries > 10:
-                      raise ValueError('Sampling failed.')
+                      raise ValueError('Semi-AR sampling failed.')
               samples.append(sample_i)
               self.metrics.nfes.update(nfes)
-              self.metrics.gen_nfes. append(nfes)
+              self.metrics.gen_nfes.append(nfes)
+      
+      # ================================================================
+      # Analytic Sampler (FIXED - default for HDP)
+      # ================================================================
       else:
+          if is_hdp:
+              print(f"✅ Using analytic sampler for HDP (hierarchical denoising)")
+          
           nfes = num_steps
-          for _ in range(self.config.sampling. num_sample_batches):
+          for batch_idx in range(self.config.sampling.num_sample_batches):
               sample_i, num_tries = None, 0
+              
+              # Handle question_tokens for multiple batches
+              q_tokens_batch = None
+              if question_tokens is not None:
+                  start_idx = batch_idx * batch_size_per_gpu
+                  end_idx = start_idx + batch_size_per_gpu
+                  if start_idx < question_tokens.shape[0]:
+                      q_tokens_batch = question_tokens[start_idx:end_idx]
+                      # Pad if needed
+                      if q_tokens_batch.shape[0] < batch_size_per_gpu:
+                          pad_size = batch_size_per_gpu - q_tokens_batch.shape[0]
+                          # Repeat last question
+                          q_tokens_batch = torch.cat([
+                              q_tokens_batch,
+                              q_tokens_batch[-1:].repeat(pad_size, 1)
+                          ], dim=0)
+              
               while sample_i is None: 
                   sample_i = self._analytic_sampler(
                       n_samples=batch_size_per_gpu,
                       num_steps=num_steps,
                       seqlen=seqlen,
                       eps=eps,
-                      question_tokens=question_tokens  # NEW:  Pass question tokens
+                      question_tokens=q_tokens_batch
                   )
                   num_tries += 1
                   if num_tries > 10 and sample_i is None:
-                      raise ValueError('Sampling failed.')
-              samples. append(sample_i)
+                      raise ValueError('Analytic sampling failed after 10 tries.')
+              
+              samples.append(sample_i)
               self.metrics.nfes.update(nfes)
               self.metrics.gen_nfes.append(nfes)
       
+      # ================================================================
+      # Decode and return
+      # ================================================================
       samples = torch.cat(samples, dim=0) 
       return self.tokenizer.batch_decode(samples)
 
@@ -1195,50 +1319,89 @@ class Diffusion(L.LightningModule):
     return torch.min(- torch.log(1 - p), self.noise.sigma_max)
 
   def restore_model_and_sample(self, num_steps, eps=1e-5, seqlen=None, question_tokens=None):
-    """Generate samples from the model. 
+    """Generate samples with EMA weights.
     
     Args:
         num_steps: Number of denoising steps
         eps: Minimum noise level  
         seqlen: Sequence length
-        question_tokens:  (batch, q_len) - Optional question tokens for HDP
+        question_tokens: (batch, q_len) - Optional question tokens for HDP
     
     Returns: 
         List of decoded text samples
     """
-    if self. ema:   
+    # Restore EMA weights
+    if self.ema:   
         self.ema.store(self._get_parameters())
         self.ema.copy_to(self._get_parameters())
-    self. backbone.eval()
-    self.noise. eval()
+    
+    self.backbone.eval()
+    self.noise.eval()
+    
+    # Generate samples
     samples = self._sample(
         seqlen=seqlen,
         batch_size_per_gpu=self.config.loader.eval_batch_size,
         num_steps=num_steps,
         eps=eps,
-        question_tokens=question_tokens  # NEW: Pass question tokens
+        question_tokens=question_tokens
     )
+    
+    # Compute perplexity
     self.metrics.record_generative_perplexity(
         samples,
         self.config.model.length,
         self.config.loader.eval_batch_size,
-        self.device)
+        self.device
+    )
+    
+    # Restore original weights
+    if self.ema:
+        self.ema.restore(self._get_parameters())
+    
     return samples
-
+  
   def get_score(self, x, sigma, block_indices=None):
-    """Get score with optional HDP attention mask."""
+    """Get score with optional HDP attention mask.
+    
+    Args:
+        x: Input tokens
+        sigma: Noise level
+        block_indices: HDP block assignments
+    
+    Returns:
+        Score (probabilities)
+    """
+    # Generate x0_pred if cross_attn
+    if self.cross_attn:
+        with torch.no_grad():
+            x_temp = torch.cat((x, x), dim=-1)
+            logits_temp = self.forward(
+                x_temp, 
+                sigma, 
+                sample_mode=True,
+                block_indices=block_indices
+            )
+            x0_pred = logits_temp.argmax(dim=-1)
+        
+        x_input = torch.cat((x, x0_pred), dim=-1)
+    else:
+        x_input = x
+    
     model_output = self.forward(
-        x, sigma, 
+        x_input, 
+        sigma, 
         sample_mode=True,
         block_indices=block_indices
     ).to(torch.float64)
     
-    if self.config.sampling. nucleus_p == 1.0:
-        return model_output. exp()
-    model_output = model_output - model_output. logsumexp(-1, keepdim=True)
+    if self.config.sampling.nucleus_p == 1.0:
+        return model_output.exp()
+    
+    model_output = model_output - model_output.logsumexp(-1, keepdim=True)
     model_output = self._nucleus_sample(model_output.exp())
     return model_output
-
+  
   def _staggered_score(self, score, dsigma):
     score = score.clone()
     
@@ -1264,183 +1427,266 @@ class Diffusion(L.LightningModule):
     return score
 
   def _analytic_update(self, x, t, dt, block_indices=None, x0_pred=None):
-      """
-      Analytic update for DISCRETE DIFFUSION.
-      
-      Sampling modes:
-        - bd3lm: categorical sampling (baseline, no confidence gate)
-        - hdp: categorical sampling + HDP structure (fair comparison)
-        - hdp_oracle: argmax + confidence gate + HDP structure (ablation)
-      """
-      
-      sampling_mode = getattr(self.config.sampling, 'sampling_mode', 'hdp')
+    """
+    Analytic update for DISCRETE DIFFUSION with proper cross-attention handling.
+    
+    Args:
+        x: Current noisy sample [B, L]
+        t: Current time step
+        dt: Time step size
+        block_indices: HDP block assignments
+        x0_pred: Previous prediction of x0 (for cross_attn)
+    
+    Returns:
+        x_out: Updated sample
+        x0_pred_next: Updated x0 prediction (for next step)
+    """
+    
+    sampling_mode = getattr(self.config.sampling, 'sampling_mode', 'hdp')
 
-      # ================================================================
-      # 1. Noise schedule → unmask probability
-      # ================================================================
-      curr_sigma = self._sigma_from_p(self.noise(t)[1])
-      next_sigma = self._sigma_from_p(self.noise(t - dt)[1])
+    # ================================================================
+    # 1. Noise schedule → unmask probability
+    # ================================================================
+    curr_sigma = self._sigma_from_p(self.noise(t)[1])
+    next_sigma = self._sigma_from_p(self.noise(t - dt)[1])
 
-      p_t = 1.0 - torch.exp(-curr_sigma)
-      p_s = 1.0 - torch.exp(-next_sigma)
-      p_t = torch.clamp(p_t, min=1e-6)
+    p_t = 1.0 - torch.exp(-curr_sigma)
+    p_s = 1.0 - torch.exp(-next_sigma)
+    p_t = torch.clamp(p_t, min=1e-6)
 
-      prob_stay_masked = p_s / p_t
-      prob_unmask = 1.0 - prob_stay_masked
+    prob_stay_masked = p_s / p_t
+    prob_unmask = 1.0 - prob_stay_masked
 
-      if prob_unmask.ndim > 0:
-          prob_unmask = prob_unmask.view(-1, 1)
+    if prob_unmask.ndim > 0:
+        prob_unmask = prob_unmask.view(-1, 1)
 
-      # ================================================================
-      # 2. Forward pass (MATCH TRAINING!)
-      # ================================================================
-      if self.cross_attn:
-          x0_ref = x0_pred if x0_pred is not None else x
-          x_input = torch.cat((x, x0_ref), dim=-1)  # [xt, x0_pred]
-      else:
-          x_input = x
+    # ================================================================
+    # 2. Generate x0_pred if needed (CRITICAL FIX!)
+    # ================================================================
+    if self.cross_attn:
+        if x0_pred is None:
+            # First step OR no prediction: use greedy decode
+            with torch.no_grad():
+                x_temp = torch.cat((x, x), dim=-1)  # Temporary reference
+                logits_temp = self.forward(
+                    x_temp, 
+                    curr_sigma, 
+                    sample_mode=True,
+                    block_indices=block_indices
+                )
+                x0_pred = logits_temp.argmax(dim=-1)
+                
+                # Keep Question block clean (HDP)
+                if sampling_mode in ['hdp', 'hdp_oracle'] and block_indices is not None:
+                    if self.use_hdp_attention and self.hdp_block_sizes is not None:
+                        q_len = self.hdp_block_sizes[0]
+                        x0_pred[:, :q_len] = x[:, :q_len]
+        
+        # Use predicted x0 as reference
+        x_input = torch.cat((x, x0_pred), dim=-1)
+    else:
+        x_input = x
 
-      logits = self.forward(
-          x_input,
-          curr_sigma,
-          sample_mode=True,
-          block_indices=block_indices
-      )
+    # ================================================================
+    # 3. Forward pass with CORRECT input
+    # ================================================================
+    logits = self.forward(
+        x_input,
+        curr_sigma,
+        sample_mode=True,
+        block_indices=block_indices
+    )
 
-      # ================================================================
-      # 3. Safety filters (ONLY for HDP modes)
-      # ================================================================
-      if sampling_mode in ['hdp', 'hdp_oracle']:
-          plan_id   = getattr(self.config.model, "plan_token_id", 50258)
-          exec_id   = getattr(self.config.model, "execution_token_id", 50259)
-          answer_id = getattr(self.config.model, "answer_token_id", 50260)
-          pad_id    = getattr(self.tokenizer, "pad_token_id", 50257)
+    # ================================================================
+    # 4. Safety filters (ONLY for HDP modes)
+    # ================================================================
+    if sampling_mode in ['hdp', 'hdp_oracle']:
+        plan_id   = getattr(self.config.model, "plan_token_id", 50258)
+        exec_id   = getattr(self.config.model, "execution_token_id", 50259)
+        answer_id = getattr(self.config.model, "answer_token_id", 50260)
+        pad_id    = getattr(self.tokenizer, "pad_token_id", 50257)
 
-          logits[..., plan_id]   = self.neg_infinity
-          logits[..., exec_id]   = self.neg_infinity
-          logits[..., answer_id] = self.neg_infinity
-          logits[..., pad_id]    = self.neg_infinity
+        logits[..., plan_id]   = self.neg_infinity
+        logits[..., exec_id]   = self.neg_infinity
+        logits[..., answer_id] = self.neg_infinity
+        logits[..., pad_id]    = self.neg_infinity
+        logits[..., self.mask_index] = self.neg_infinity
 
-      # ================================================================
-      # 4. Predict x0 based on sampling_mode
-      # ================================================================
-      if sampling_mode == 'bd3lm':
-          # BD3-LM: Categorical sampling (original)
-          p_x0 = logits.to(torch.float64).exp()
-          pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
-          p_x0[..., self.mask_index] = 0.0
-          if pad_token_id is not None:
-              p_x0[..., pad_token_id] = 0.0
-          p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
-          pred_tokens = _sample_categorical(p_x0)
-          
-          # BD3-LM: No confidence gate
-          should_unmask = torch.rand_like(x.float()) < prob_unmask
-          
-      elif sampling_mode == 'hdp':
-          # HDP: Categorical sampling (fair comparison)
-          p_x0 = logits.to(torch.float64).exp()
-          p_x0[..., self.mask_index] = 0.0
-          p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
-          pred_tokens = _sample_categorical(p_x0)
-          
-          # HDP: No confidence gate (fair with BD3-LM)
-          should_unmask = torch.rand_like(x.float()) < prob_unmask
-          
-      elif sampling_mode == 'hdp_oracle':
-          # HDP-Oracle: Argmax + confidence gate (ablation)
-          pred_tokens = logits.argmax(dim=-1)
-          
-          # Confidence gate
-          top2, _ = logits.topk(2, dim=-1)
-          logit_margin = top2[..., 0] - top2[..., 1]
-          avg_sigma = curr_sigma.mean().item()
-          
-          if avg_sigma > 3.0:
-              conf_threshold = 0.6
-          elif avg_sigma > 2.0:
-              conf_threshold = 0.3
-          else:
-              conf_threshold = 0.15
-          
-          can_unmask = logit_margin > conf_threshold
-          
-          # Early step hard block
-          SIGMA_CONTENT_START = 3.5
-          if avg_sigma > SIGMA_CONTENT_START:
-              should_unmask = torch.zeros_like(x, dtype=torch.bool)
-          else:
-              anneal = max(0.05, min(1.0, 1.0 - avg_sigma / SIGMA_CONTENT_START))
-              rand_unmask = torch.rand_like(x.float()) < (prob_unmask * anneal)
-              should_unmask = rand_unmask & can_unmask
-      else:
-          raise ValueError(f"Unknown sampling_mode: {sampling_mode}")
+    # ================================================================
+    # 5. Predict x0 based on sampling_mode
+    # ================================================================
+    if sampling_mode == 'bd3lm':
+        # BD3-LM: Categorical sampling (baseline)
+        p_x0 = logits.to(torch.float64).exp()
+        
+        # Safety: remove mask and pad from distribution
+        p_x0[..., self.mask_index] = 0.0
+        pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
+        if pad_token_id is not None:
+            p_x0[..., pad_token_id] = 0.0
+        
+        # Renormalize
+        p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
+        pred_tokens = _sample_categorical(p_x0)
+        
+        # BD3-LM: Simple unmasking (no confidence gate)
+        should_unmask = torch.rand_like(x.float()) < prob_unmask
+        
+    elif sampling_mode == 'hdp':
+        # HDP: Categorical sampling (fair comparison)
+        p_x0 = logits.to(torch.float64).exp()
+        
+        # Renormalize (safety filters already applied)
+        p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
+        pred_tokens = _sample_categorical(p_x0)
+        
+        # HDP: Simple unmasking (same as BD3-LM for fair comparison)
+        should_unmask = torch.rand_like(x.float()) < prob_unmask
+        
+    elif sampling_mode == 'hdp_oracle':
+        # HDP-Oracle: Argmax + confidence gate (ablation)
+        pred_tokens = logits.argmax(dim=-1)
+        
+        # Confidence gate: only unmask if model is confident
+        top2, _ = logits.topk(2, dim=-1)
+        logit_margin = top2[..., 0] - top2[..., 1]
+        avg_sigma = curr_sigma.mean().item()
+        
+        # Adaptive threshold based on noise level
+        if avg_sigma > 3.0:
+            conf_threshold = 0.6
+        elif avg_sigma > 2.0:
+            conf_threshold = 0.3
+        else:
+            conf_threshold = 0.15
+        
+        can_unmask = logit_margin > conf_threshold
+        
+        # FIXED: Softer early blocking (không block hoàn toàn)
+        SIGMA_CONTENT_START = 3.5
+        if avg_sigma > SIGMA_CONTENT_START:
+            # Giảm xác suất unmask, nhưng vẫn cho phép một số
+            block_factor = min(0.95, (avg_sigma - SIGMA_CONTENT_START) / 2.0)
+            effective_prob = prob_unmask * (1 - block_factor)
+            rand_unmask = torch.rand_like(x.float()) < effective_prob
+            should_unmask = rand_unmask & can_unmask
+        else:
+            # Normal unmasking với annealing
+            anneal = max(0.05, min(1.0, 1.0 - avg_sigma / SIGMA_CONTENT_START))
+            rand_unmask = torch.rand_like(x.float()) < (prob_unmask * anneal)
+            should_unmask = rand_unmask & can_unmask
+    else:
+        raise ValueError(f"Unknown sampling_mode: {sampling_mode}")
 
-      # ================================================================
-      # 5. HDP STRUCTURE ENFORCEMENT (hdp and hdp_oracle only)
-      # ================================================================
-      if sampling_mode in ['hdp', 'hdp_oracle'] and self.use_hdp_attention and self.hdp_block_sizes is not None:
-          q_len, p_len, e_len = self.hdp_block_sizes
+    # ================================================================
+    # 6. HDP STRUCTURE ENFORCEMENT (hdp and hdp_oracle only)
+    # ================================================================
+    if sampling_mode in ['hdp', 'hdp_oracle'] and self.use_hdp_attention and self.hdp_block_sizes is not None:
+        q_len, p_len, e_len = self.hdp_block_sizes
 
-          # Question block: NEVER unmask (already clean)
-          should_unmask[:, :q_len] = False
+        # Question block: NEVER unmask (already clean)
+        should_unmask[:, :q_len] = False
 
-          # Marker positions: NEVER unmask
-          marker_pos = torch.zeros_like(x, dtype=torch.bool)
-          if x.shape[1] > q_len:
-              marker_pos[:, q_len] = True  # <|plan|>
-          if x.shape[1] > q_len + p_len:
-              marker_pos[:, q_len + p_len] = True  # <|execution|>
+        # Marker positions: NEVER unmask
+        marker_pos = torch.zeros_like(x, dtype=torch.bool)
+        if x.shape[1] > q_len:
+            marker_pos[:, q_len] = True  # <|plan|>
+        if x.shape[1] > q_len + p_len:
+            marker_pos[:, q_len + p_len] = True  # <|execution|>
 
-          should_unmask &= ~marker_pos
+        should_unmask &= ~marker_pos
 
-      # ================================================================
-      # 6. Apply update
-      # ================================================================
-      is_mask = (x == self.mask_index)
-      x_out = torch.where(is_mask & should_unmask, pred_tokens, x)
+    # ================================================================
+    # 7. Apply update
+    # ================================================================
+    is_mask = (x == self.mask_index)
+    x_out = torch.where(is_mask & should_unmask, pred_tokens, x)
 
-      # ================================================================
-      # 7. FORCE HDP MARKERS (hdp and hdp_oracle only)
-      # ================================================================
-      if sampling_mode in ['hdp', 'hdp_oracle'] and self.use_hdp_attention and self.hdp_block_sizes is not None:
-          q_len, p_len, _ = self.hdp_block_sizes
-          plan_id = getattr(self.config.model, "plan_token_id", 50258)
-          exec_id = getattr(self.config.model, "execution_token_id", 50259)
+    # ================================================================
+    # 8. Update x0_pred for next iteration (CRITICAL FIX!)
+    # ================================================================
+    if self.cross_attn:
+        # Update x0_pred: merge new predictions with existing
+        if x0_pred is None:
+            x0_pred_next = pred_tokens.clone()
+        else:
+            # Keep existing predictions, update newly unmasked
+            x0_pred_next = x0_pred.clone()
+            x0_pred_next = torch.where(is_mask & should_unmask, pred_tokens, x0_pred_next)
+    else:
+        x0_pred_next = None
 
-          x_out[:, :q_len] = x[:, :q_len]  # freeze question
+    # ================================================================
+    # 9. FORCE HDP MARKERS (hdp and hdp_oracle only)
+    # ================================================================
+    if sampling_mode in ['hdp', 'hdp_oracle'] and self.use_hdp_attention and self.hdp_block_sizes is not None:
+        q_len, p_len, _ = self.hdp_block_sizes
+        plan_id = getattr(self.config.model, "plan_token_id", 50258)
+        exec_id = getattr(self.config.model, "execution_token_id", 50259)
 
-          if x_out.shape[1] > q_len:
-              x_out[:, q_len] = plan_id
-          if x_out.shape[1] > q_len + p_len:
-              x_out[:, q_len + p_len] = exec_id
+        # Freeze question (already done in should_unmask, but double-check)
+        x_out[:, :q_len] = x[:, :q_len]
+        if x0_pred_next is not None:
+            x0_pred_next[:, :q_len] = x[:, :q_len]
 
-      return x_out
+        # Force markers
+        if x_out.shape[1] > q_len:
+            x_out[:, q_len] = plan_id
+            if x0_pred_next is not None:
+                x0_pred_next[:, q_len] = plan_id
+        
+        if x_out.shape[1] > q_len + p_len:
+            x_out[:, q_len + p_len] = exec_id
+            if x0_pred_next is not None:
+                x0_pred_next[:, q_len + p_len] = exec_id
 
-
-  def _denoiser_update(self, x, t, block_indices=None):
+    return x_out, x0_pred_next
+  
+  def _denoiser_update(self, x, t, block_indices=None, x0_pred=None):
     """
     Final denoising step with adaptive decoding strategy.
     
-    Sampling modes:
-      - bd3lm: categorical sampling (baseline)
-      - hdp: categorical sampling + HDP structure (fair comparison)
-      - hdp_oracle: argmax + confidence gate (ablation)
+    Args:
+        x: Current sample
+        t: Time step (should be close to 0)
+        block_indices: HDP block assignments
+        x0_pred: Previous x0 prediction (for cross_attn)
+    
+    Returns:
+        samples: Final decoded sample
     """
     # 1. Get noise level
     sigma = self._sigma_from_p(self.noise(t)[1])
     
-    # 2. Forward pass with cross_attn support
-    # ✅ CRITICAL FIX: Match training which uses [xt, x0]
+    # 2. Generate x0_pred if needed (CRITICAL FIX!)
     if self.cross_attn:
-        x_input = torch.cat((x, x), dim=-1)  # Use current x as guess for x0
+        if x0_pred is None:
+            # Generate initial prediction
+            with torch.no_grad():
+                x_temp = torch.cat((x, x), dim=-1)
+                logits_temp = self.forward(
+                    x_temp, 
+                    sigma, 
+                    sample_mode=True, 
+                    block_indices=block_indices
+                )
+                x0_pred = logits_temp.argmax(dim=-1)
+        
+        # Use x0_pred as reference (MATCH TRAINING!)
+        x_input = torch.cat((x, x0_pred), dim=-1)
     else:
         x_input = x
     
-    model_output = self.forward(x_input, sigma, sample_mode=True, block_indices=block_indices)
+    # 3. Forward pass with CORRECT input
+    model_output = self.forward(
+        x_input, 
+        sigma, 
+        sample_mode=True, 
+        block_indices=block_indices
+    )
     
-    # 3. Adaptive decoding based on sampling_mode
-    sampling_mode = getattr(self.config.sampling, 'sampling_mode', 'hdp')  # Default: hdp
+    # 4. Adaptive decoding based on sampling_mode
+    sampling_mode = getattr(self.config.sampling, 'sampling_mode', 'hdp')
     
     if sampling_mode == 'bd3lm':
         # BD3-LM: Categorical sampling (baseline)
@@ -1498,7 +1744,7 @@ class Diffusion(L.LightningModule):
         top2, _ = logits.topk(2, dim=-1)
         logit_margin = top2[..., 0] - top2[..., 1]
         
-        # Confidence threshold
+        # Final step: lower threshold (more greedy)
         conf_threshold = 0.2
         high_conf = logit_margin > conf_threshold
         
@@ -1512,11 +1758,11 @@ class Diffusion(L.LightningModule):
         samples = torch.where(high_conf, greedy_samples, sampled)
         
     else:
-        raise ValueError(f"Unknown sampling_mode: {sampling_mode}. Choose from ['bd3lm', 'hdp', 'hdp_oracle']")
+        raise ValueError(f"Unknown sampling_mode: {sampling_mode}")
     
-    # =================================================================
-    # 🥇 CRITICAL: HDP Structure Enforcement (hdp and hdp_oracle only)
-    # =================================================================
+    # ================================================================
+    # 5. HDP Structure Enforcement (hdp and hdp_oracle only)
+    # ================================================================
     if sampling_mode in ['hdp', 'hdp_oracle'] and self.use_hdp_attention and self.hdp_block_sizes is not None:
         q_len, p_len, e_len = self.hdp_block_sizes
         
@@ -1531,7 +1777,6 @@ class Diffusion(L.LightningModule):
             samples[:, q_len] = plan_token_id
         if samples.shape[1] > (q_len + p_len):
             samples[:, q_len + p_len] = exec_token_id
-    # =================================================================
     
     return samples
   
@@ -1600,64 +1845,81 @@ class Diffusion(L.LightningModule):
     return input_tokens, output_tokens, new_attention_mask
 
   def _forward_pass_diffusion(self, x0, t=None, sampling_eps_min=None, sampling_eps_max=None, block_indices=None):
+    """Forward pass with OPTIONAL noisy reference training."""
+    
     if t is None:
-      t = self._sample_t(x0.shape,
-                         x0.device,
-                         sampling_eps_min,
-                         sampling_eps_max)
+        t = self._sample_t(x0.shape, x0.device, sampling_eps_min, sampling_eps_max)
 
     loss_scale, p = self.noise(t)
     sigma = self._sigma_from_p(p[:,0].unsqueeze(-1))
-    dsigma = - loss_scale * torch.expm1(sigma) # used for sedd
+    dsigma = - loss_scale * torch.expm1(sigma)
 
-    # below is needed to reproduce mdlm/sedd numbers with models from sahoo et al
-    # (numerical imprecision computing probs under loglinear schedule)
     if self.mdlm_loss_scale:
-      sigma, dsigma = self.noise.total_noise(t), self.noise.rate_noise(t)
-      p = 1 - torch.exp(-sigma)
-      loss_scale = - (dsigma / torch.expm1(sigma))
+        sigma, dsigma = self.noise.total_noise(t), self.noise.rate_noise(t)
+        p = 1 - torch.exp(-sigma)
+        loss_scale = - (dsigma / torch.expm1(sigma))
 
-    xt = self.q_xt(x0,
-                   p,
-                   sampling_eps_min=sampling_eps_min,
-                   sampling_eps_max=sampling_eps_max)
+    xt = self.q_xt(x0, p, sampling_eps_min=sampling_eps_min, sampling_eps_max=sampling_eps_max)
+    
     if sampling_eps_min is not None and sampling_eps_min > 0.5:
-      loss_scale = - torch.ones_like(loss_scale)
+        loss_scale = - torch.ones_like(loss_scale)
+    
     if self.ignore_bos:
-      xt[:, 0] = x0[:, 0]
+        xt[:, 0] = x0[:, 0]
     
-    # ✅ HDP: Keep Question block CLEAN (no masking) since it's the input!
-    # Only mask Plan (block 1) and Execution (block 2)
+    # HDP: Keep Question block clean
     if block_indices is not None:
-      # Handle both 1D [seq_len] and 2D [batch, seq_len] block_indices
-      if block_indices.ndim == 1:
-        # Expand to [batch, seq_len]
-        question_mask = (block_indices == 0).unsqueeze(0).expand_as(x0)
-      else:
-        question_mask = (block_indices == 0)
-      xt = torch.where(question_mask, x0, xt)
-      
-      # Note: We do NOT force markers during training - let model learn to generate them
-      # Markers will be enforced during inference only
+        if block_indices.ndim == 1:
+            question_mask = (block_indices == 0).unsqueeze(0).expand_as(x0)
+        else:
+            question_mask = (block_indices == 0)
+        xt = torch.where(question_mask, x0, xt)
     
+    # ================================================================
+    # NEW: Training with noisy x0 reference (mimics inference)
+    # ================================================================
     x_input = xt
     if self.cross_attn:
-      x_input = torch.cat((xt, x0), dim=-1)
+        # NEW: Curriculum learning - gradually introduce noisy references
+        use_noisy_ref = False
+        if self.training and hasattr(self.config.training, 'noisy_ref_prob'):
+            # Probability of using noisy reference (default 0.0 = disabled)
+            noisy_ref_prob = self.config.training.noisy_ref_prob
+            use_noisy_ref = (torch.rand(1).item() < noisy_ref_prob)
+        
+        if use_noisy_ref:
+            # Generate noisy x0 reference (mimics inference)
+            with torch.no_grad():
+                x_temp = torch.cat((xt, xt), dim=-1)
+                logits_noisy = self.forward(x_temp, sigma=sigma, block_indices=block_indices)
+                x0_noisy = logits_noisy.argmax(dim=-1)
+                
+                # Keep Question clean even in noisy reference
+                if block_indices is not None:
+                    if block_indices.ndim == 1:
+                        question_mask = (block_indices == 0).unsqueeze(0).expand_as(x0)
+                    else:
+                        question_mask = (block_indices == 0)
+                    x0_noisy = torch.where(question_mask, x0, x0_noisy)
+            
+            x_input = torch.cat((xt, x0_noisy), dim=-1)
+        else:
+            # Standard: use clean x0
+            x_input = torch.cat((xt, x0), dim=-1)
 
     model_output = self.forward(x_input, sigma=sigma, block_indices=block_indices)
     utils.print_nans(model_output, 'model_output')
 
     if self.parameterization == 'sedd':
-      return dsigma * self._score_entropy(
-        model_output, sigma, xt, x0)
+        return dsigma * self._score_entropy(model_output, sigma, xt, x0)
 
     log_p_theta = torch.gather(
-      input=model_output,
-      dim=-1,
-      index=x0[:, :, None]).squeeze(-1)
+        input=model_output,
+        dim=-1,
+        index=x0[:, :, None]
+    ).squeeze(-1)
     loss = loss_scale * log_p_theta
     return loss
-
   def _loss(self, x0, attention_mask, t=None, sampling_eps_min=None, sampling_eps_max=None, block_indices=None):
     if sampling_eps_min is None and hasattr(self, 'sampling_eps_min'):
       sampling_eps_min = self.sampling_eps_min
@@ -1795,141 +2057,187 @@ class Diffusion(L.LightningModule):
       question_tokens=None
   ): 
       """
-      Analytic sampler: EXACT MATCH ALIGNMENT.
-      Index 0 = First word of Question.
-      Trailing space in Question Block = PAD tokens.
+      Analytic sampler with FIXED cross-attention logic.
+      
+      Args:
+          n_samples: Batch size
+          num_steps: Number of denoising steps
+          seqlen: Sequence length
+          eps: Minimum noise level
+          question_tokens: Optional question tokens for HDP
+      
+      Returns:
+          Generated samples [B, L]
       """
       x = self._sample_prior(n_samples, seqlen).to(self.device)
-      print(f"🔍 [_analytic_sampler] Starting sampling (EXACT MATCH ALIGNMENT)")
+      print(f"\n🔍 [_analytic_sampler] Starting sampling")
+      print(f"   n_samples={n_samples}, num_steps={num_steps}, seqlen={seqlen}")
 
-      # HDP Config Check
-      if self.use_hdp_attention:
-        if not hasattr(self, 'hdp_block_sizes') or self.hdp_block_sizes is None:
-          if hasattr(self.config, 'data') and hasattr(self.config.data, 'hdp'):
-              self.hdp_block_sizes = (
-                  self.config.data.hdp.question_len,
-                  self.config.data.hdp.plan_len,
-                  self.config.data.hdp.exec_len
-              )
-          else: self.use_hdp_attention = False
-        
-        if self.use_hdp_attention and self.hdp_block_sizes is not None:
-          expected_len = sum(self.hdp_block_sizes)
-          if expected_len != seqlen:
-              q_len, p_len, e_len = self.hdp_block_sizes
-              ratio = seqlen / expected_len
-              q_len = max(1, int(q_len * ratio))
-              p_len = max(1, int(p_len * ratio))
-              e_len = max(1, seqlen - q_len - p_len)
-              self.hdp_block_sizes = (q_len, p_len, e_len)
-
-      # Setup
+      # ================================================================
+      # 1. HDP Configuration
+      # ================================================================
       block_indices = None
       q_len, p_len, e_len = 0, 0, 0
-      pad_token = self.tokenizer.pad_token_id if hasattr(self.tokenizer, 'pad_token_id') else 50257
+      pad_token = getattr(self.tokenizer, 'pad_token_id', 50257)
       
+      if self.use_hdp_attention:
+          if not hasattr(self, 'hdp_block_sizes') or self.hdp_block_sizes is None:
+              if hasattr(self.config, 'data') and hasattr(self.config.data, 'hdp'):
+                  self.hdp_block_sizes = (
+                      self.config.data.hdp.question_len,
+                      self.config.data.hdp.plan_len,
+                      self.config.data.hdp.exec_len
+                  )
+              else:
+                  self.use_hdp_attention = False
+          
+          if self.use_hdp_attention and self.hdp_block_sizes is not None:
+              expected_len = sum(self.hdp_block_sizes)
+              if expected_len != seqlen:
+                  q_len, p_len, e_len = self.hdp_block_sizes
+                  ratio = seqlen / expected_len
+                  q_len = max(1, int(q_len * ratio))
+                  p_len = max(1, int(p_len * ratio))
+                  e_len = max(1, seqlen - q_len - p_len)
+                  self.hdp_block_sizes = (q_len, p_len, e_len)
+                  print(f"   ⚠️  Adjusted HDP blocks to match seqlen: {self.hdp_block_sizes}")
+
+      # ================================================================
+      # 2. Setup Block Indices & Initialize Sequence
+      # ================================================================
       if self.use_hdp_attention and self.hdp_block_sizes is not None:
           q_len, p_len, e_len = self.hdp_block_sizes
           
-          # Block Indices
+          # Create block indices
           b_q = torch.zeros(q_len, dtype=torch.long, device=self.device)
           b_p = torch.ones(p_len, dtype=torch.long, device=self.device)
           b_e = torch.full((e_len,), 2, dtype=torch.long, device=self.device)
           block_indices = torch.cat([b_q, b_p, b_e]).unsqueeze(0).repeat(n_samples, 1)
           
-          # 3.2 Điền Question (NO BOS, NO PAD AT START)
-          if question_tokens is not None: 
+          print(f"   ✅ HDP blocks: Q={q_len}, P={p_len}, E={e_len}")
+          
+          # Fill Question block (NO BOS at start - EXACT MATCH dataset alignment)
+          q_contents = []  # Store actual content lengths for each sample
+          
+          if question_tokens is not None:
               if question_tokens.shape[0] == 1 and n_samples > 1:
                   question_tokens = question_tokens.repeat(n_samples, 1)
               
               # Strip BOS/EOS/PAD from input
-              q_raw = []
-              for seq in question_tokens:
+              for seq_idx, seq in enumerate(question_tokens):
+                  # Remove special tokens
                   mask = seq != pad_token
                   if hasattr(self.tokenizer, 'bos_token_id') and self.tokenizer.bos_token_id is not None:
                       mask &= (seq != self.tokenizer.bos_token_id)
                   if hasattr(self.tokenizer, 'eos_token_id') and self.tokenizer.eos_token_id is not None:
                       mask &= (seq != self.tokenizer.eos_token_id)
+                  
                   content = seq[mask]
-                  q_raw.append(content)
-              
-              # Fill x
-              for i, content in enumerate(q_raw):
+                  q_contents.append(content)
+                  
+                  # Fill: content at start, PAD for the rest
                   l = min(len(content), q_len)
-                  # Gán content vào đầu block
-                  x[i, :l] = content[:l]
-                  # Gán PAD vào phần còn lại của block
-                  x[i, l:q_len] = pad_token 
+                  x[seq_idx, :l] = content[:l]
+                  x[seq_idx, l:q_len] = pad_token
               
+              print(f"   ✅ Question tokens filled (lengths: {[len(c) for c in q_contents[:5]]}...)")
           else:
+              # No question provided: fill with PAD
               x[:, :q_len] = pad_token
+              q_contents = [torch.tensor([], device=self.device) for _ in range(n_samples)]
+              print(f"   ⚠️  No question tokens - using PAD")
 
-          # Anchoring
+          # Anchor markers
           plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
           exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
           
-          if q_len < seqlen: x[:, q_len] = plan_token_id
-          if q_len + p_len < seqlen: x[:, q_len + p_len] = exec_token_id
-
-      else:
-          x[:, 0] = self.tokenizer.bos_token_id if self.tokenizer.bos_token_id else 50256
+          if q_len < seqlen:
+              x[:, q_len] = plan_token_id
+          if q_len + p_len < seqlen:
+              x[:, q_len + p_len] = exec_token_id
+          
+          print(f"   ✅ Markers anchored: <|plan|> at {q_len}, <|execution|> at {q_len+p_len}")
       
+      else:
+          # Non-HDP: standard BOS token
+          if hasattr(self.tokenizer, 'bos_token_id') and self.tokenizer.bos_token_id is not None:
+              x[:, 0] = self.tokenizer.bos_token_id
+          q_contents = None
+
+      # ================================================================
+      # 3. Sampling Loop with FIXED x0_pred tracking
+      # ================================================================
       timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
       dt = (1 - eps) / num_steps
       
-      # ✅ CRITICAL FIX: Initialize x0_pred WITHOUT mask tokens!
-      # Training sees [xt_noisy, x0_clean] where x0 has NO mask tokens
-      # But if we do x0_pred=x.clone(), both copies have mask tokens -> WRONG!
-      # Solution: Fill x0_pred with Question (clean) + Plan/Exec (pad, not mask)
-      if self.cross_attn:
-          x0_pred = x.clone()
-          # Replace all mask tokens with pad (so model sees "uncertain but clean" reference)
-          mask_positions = (x0_pred == self.mask_index)
-          x0_pred[mask_positions] = pad_token
-      else:
-          x0_pred = None
+      # Initialize x0_pred (CRITICAL FIX!)
+      x0_pred = None
       
-      # 🔍 DEBUG: Check Question block content before sampling
-      print(f"\n🔍 [_analytic_sampler] Question block content:")
-      print(f"   x[0, :10] = {x[0, :10].tolist()}")
-      print(f"   x[0, 120:130] = {x[0, 120:130].tolist()}")
-      if question_tokens is not None:
-          print(f"   question_tokens[0, :10] = {question_tokens[0, :10].tolist()}")
-          q_decoded = self.tokenizer.decode(x[0, :q_len])
-          print(f"   Decoded Question: {q_decoded[:200]}...")
+      print(f"   🚀 Starting {num_steps} denoising steps...")
       
       for i in tqdm(range(num_steps), desc='HDP Sampling'):
           t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
           
-          # Pass x0_pred from previous step (or None for first step)
-          x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices, x0_pred=x0_pred)
+          # Update with x0_pred tracking (FIXED!)
+          x, x0_pred = self._analytic_update(
+              x=x, 
+              t=t, 
+              dt=dt, 
+              block_indices=block_indices,
+              x0_pred=x0_pred  # Pass previous prediction
+          )
           
-          # Update x0_pred: Use current x with mask replaced by predictions
-          # This will be used as "clean reference" for next step
-          if self.cross_attn:
-              x0_pred = x.clone()  # Best guess so far
-          
-          # Re-enforce (Giữ nguyên cấu trúc)
+          # Re-enforce structure (ONLY restore actual content, not PAD!)
           if self.use_hdp_attention and question_tokens is not None:
-              for idx, content in enumerate(q_raw):
+              for seq_idx, content in enumerate(q_contents):
                   l = min(len(content), q_len)
-                  x[idx, :l] = content[:l]
-                  x[idx, l:q_len] = pad_token # Force PAD phần thừa
+                  # Restore ONLY content tokens (not trailing PAD)
+                  if l > 0:
+                      x[seq_idx, :l] = content[:l]
+                  # Don't touch PAD region (x[seq_idx, l:q_len])
               
+              # Re-anchor markers
               x[:, q_len] = plan_token_id
               x[:, q_len + p_len] = exec_token_id
+              
+              # Also update x0_pred
+              if x0_pred is not None:
+                  for seq_idx, content in enumerate(q_contents):
+                      l = min(len(content), q_len)
+                      if l > 0:
+                          x0_pred[seq_idx, :l] = content[:l]
+                  x0_pred[:, q_len] = plan_token_id
+                  x0_pred[:, q_len + p_len] = exec_token_id
       
+      # ================================================================
+      # 4. Final Denoising Step
+      # ================================================================
       t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
-      x = self._denoiser_update(x=x, t=t, block_indices=block_indices)
+      x = self._denoiser_update(
+          x=x, 
+          t=t, 
+          block_indices=block_indices,
+          x0_pred=x0_pred  # Use final x0_pred
+      )
       
+      # Final structure enforcement
       if self.use_hdp_attention and question_tokens is not None:
-          for idx, content in enumerate(q_raw):
+          for seq_idx, content in enumerate(q_contents):
               l = min(len(content), q_len)
-              x[idx, :l] = content[:l]
-              x[idx, l:q_len] = pad_token
+              if l > 0:
+                  x[seq_idx, :l] = content[:l]
+          
+          x[:, q_len] = plan_token_id
+          x[:, q_len + p_len] = exec_token_id
       
+      print(f"   ✅ Sampling complete!")
+      
+      # Check stop conditions
       stop, x = self._check_stop_conds(x)
-      if stop: return None
+      if stop:
+          print(f"   ⚠️  Stop condition met, returning None")
+          return None
+      
       return x
 
   @torch.no_grad
