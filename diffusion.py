@@ -694,8 +694,8 @@ class Diffusion(L.LightningModule):
         
         # Decode to text
         if hasattr(self, 'tokenizer'):
-          gt_text = self.tokenizer.decode(gt_tokens[0, :200])
-          pred_text = self.tokenizer.decode(pred_tokens[0, :200])
+          gt_text = self.tokenizer.decode(gt_tokens[non_pad_mask][0, :200])
+          pred_text = self.tokenizer.decode(pred_tokens[non_pad_mask][0, :200])
           print(f"\nGround Truth Text: {gt_text}")
           print(f"Prediction Text  : {pred_text}") 
         
