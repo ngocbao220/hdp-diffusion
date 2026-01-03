@@ -640,8 +640,17 @@ class Diffusion(L.LightningModule):
               question_tokens=None
             )
           
-          # Decode - use self.tokenizer instead of dataloader.tokenizer
-          generated = self.tokenizer.decode(samples[0], skip_special_tokens=False)
+          # _sample returns list of decoded strings, not tokens
+          if isinstance(samples, list) and len(samples) > 0:
+            if isinstance(samples[0], str):
+              # Already decoded
+              generated = samples[0]
+            else:
+              # Token tensor, need to decode
+              generated = self.tokenizer.decode(samples[0], skip_special_tokens=False)
+          else:
+            generated = "[Empty sample]"
+            
           ground_truth = self.tokenizer.decode(input_ids[0], skip_special_tokens=False)
           
           print(f"\n📝 GROUND TRUTH:")
