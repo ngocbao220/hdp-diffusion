@@ -559,24 +559,27 @@ class Diffusion(L.LightningModule):
         x0 = batch['input_ids']
         attention_mask = batch.get('attention_mask', None)
         
-        # Create noisy input at MEDIUM noise level (t=0.5 → model must denoise, not copy!)
-        # ⚠️ IMPORTANT: t=0.01 is too low - model can just copy from x0 in cross_attn mode!
-        t_medium = torch.full((x0.shape[0], x0.shape[1]), 0.5, device=self.device)
-        _, p_medium = self.noise(t_medium)
-        # Add medium noise (use default sampling bounds to avoid resample errors)
-        xt_medium = self.q_xt(x0, p_medium, sampling_eps_min=1e-3, sampling_eps_max=1.0)
+        # Sample t randomly (same as training!)
+        # Training uses t ~ Uniform[sampling_eps_min, sampling_eps_max] = [0.001, 1.0]
+        # Average t ≈ 0.5, so we get realistic noise level matching training distribution
+        t_random = self._sample_t(x0.shape, self.device, 
+                                   sampling_eps_min=1e-3, 
+                                   sampling_eps_max=1.0)
+        _, p_random = self.noise(t_random)
+        # Add noise (same distribution as training)
+        xt_random = self.q_xt(x0, p_random, sampling_eps_min=1e-3, sampling_eps_max=1.0)
         
         # Compute sigma from p
-        sigma_medium = self._sigma_from_p(p_medium[:, 0].unsqueeze(-1))
+        sigma_random = self._sigma_from_p(p_random[:, 0].unsqueeze(-1))
         
         # Use training mode: [xt, x0] concatenation if cross_attn
         if self.cross_attn:
-          x_input = torch.cat((xt_medium, x0), dim=-1)
+          x_input = torch.cat((xt_random, x0), dim=-1)
         else:
-          x_input = xt_medium
+          x_input = xt_random
         
         # Forward pass (same as training)
-        model_output = self.forward(x_input, sigma=sigma_medium, block_indices=block_indices)
+        model_output = self.forward(x_input, sigma=sigma_random, block_indices=block_indices)
         pred_tokens = model_output.argmax(dim=-1)
         
         # Compare with ground truth (EXCLUDE PAD tokens!)
@@ -1306,6 +1309,12 @@ class Diffusion(L.LightningModule):
     if self.ignore_bos:
       xt[:, 0] = x0[:, 0]
     
+    # ✅ HDP: Keep Question block CLEAN (no masking) since it's the input!
+    # Only mask Plan (block 1) and Execution (block 2)
+    if block_indices is not None:
+      question_mask = (block_indices == 0)  # Block 0 = Question
+      xt = torch.where(question_mask.unsqueeze(0), x0, xt)
+    
     x_input = xt
     if self.cross_attn:
       x_input = torch.cat((xt, x0), dim=-1)
@@ -1380,9 +1389,10 @@ class Diffusion(L.LightningModule):
         print("="*80 + "\n")
       
       # block_indices: 0=Question, 1=Plan, 2=Execution
-      # Use weighted loss: Question=0.3x, Plan=1x, Exec=1x
+      # Use weighted loss: Question=0.0x (no loss!), Plan=1x, Exec=1x
+      # ✅ Question is INPUT - model should NOT learn to generate it!
       loss_weights = torch.ones_like(block_indices, dtype=torch.float32)
-      loss_weights[block_indices == 0] = 0.3  # Lower weight for Question
+      loss_weights[block_indices == 0] = 0.0  # NO loss for Question (it's input!)
       loss_weights[block_indices == 1] = 1.0  # Full weight for Plan
       loss_weights[block_indices == 2] = 1.0  # Full weight for Execution
       
