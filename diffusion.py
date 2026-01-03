@@ -1303,6 +1303,16 @@ class Diffusion(L.LightningModule):
     if use_greedy:
         # GREEDY: argmax (same as training) - for correctness
         pred_tokens = model_output.argmax(dim=-1)
+        
+        # 🔍 DEBUG: Check model predictions at Plan/Exec boundaries
+        if not hasattr(self, '_analytic_pred_debug'):
+            self._analytic_pred_debug = True
+            print(f"\n🔍 [_analytic_update] Model predictions (first step):")
+            # Position 128 = first Plan token
+            print(f"   pred_tokens[0, 128:138] = {pred_tokens[0, 128:138].tolist()}")
+            if hasattr(self, 'tokenizer'):
+                plan_pred = self.tokenizer.decode(pred_tokens[0, 128:138])
+                print(f"   Decoded (Plan start): '{plan_pred}'")
     else:
         # SAMPLING: categorical - for diversity (BD3-LM original)
         p_x0 = model_output.to(torch.float64).exp()
