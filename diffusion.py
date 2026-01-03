@@ -1531,34 +1531,16 @@ class Diffusion(L.LightningModule):
       question_tokens=None
   ): 
       """
-      Analytic sampler with HDP support.
-      
-      Args:
-          n_samples: Number of samples to generate
-          num_steps: Number of denoising steps
-          seqlen:  Sequence length
-          eps: Minimum noise level
-          question_tokens: (batch, q_len) - Optional fixed question tokens for HDP
-      
-      Returns:
-          Generated samples tensor
+      Analytic sampler with HDP support + FIXED BLOCK INDICES + MARKER ANCHORING + BOS FIX.
       """
+      # 1. Khởi tạo nhiễu (Mask)
       x = self._sample_prior(n_samples, seqlen).to(self.device)
+      
       print(f"🔍 [_analytic_sampler] Starting sampling")
-      print(f"{'='*70}")
-      print(f"use_hdp_attention: {self.use_hdp_attention}")
-      print(f"seqlen: {seqlen}, n_samples: {n_samples}")
-      print(f"has hdp_block_sizes attr: {hasattr(self, 'hdp_block_sizes')}")
-      if hasattr(self, 'hdp_block_sizes'):
-          print(f"hdp_block_sizes value: {self.hdp_block_sizes}")
-          print(f"hdp_block_sizes is None: {self.hdp_block_sizes is None}")
 
-      # Ensure hdp_block_sizes exists and matches seqlen
+      # 2. Xử lý HDP Config (Giữ nguyên)
       if self.use_hdp_attention:
         if not hasattr(self, 'hdp_block_sizes') or self.hdp_block_sizes is None:
-          print(f"⚠️  WARNING: use_hdp_attention=True but hdp_block_sizes not set!")
-          print(f"   Attempting to reconstruct from config...")
-          
           if hasattr(self.config, 'data') and hasattr(self.config.data, 'hdp'):
               self.hdp_block_sizes = (
                   self.config.data.hdp.question_len,
@@ -1568,13 +1550,9 @@ class Diffusion(L.LightningModule):
           else:
               self.use_hdp_attention = False
         
-        # Validate block sizes match seqlen
         if self.use_hdp_attention and self.hdp_block_sizes is not None:
           expected_len = sum(self.hdp_block_sizes)
           if expected_len != seqlen:
-            if seqlen < 50:  # Too short for HDP
-              self.use_hdp_attention = False
-            else:
               q_len, p_len, e_len = self.hdp_block_sizes
               ratio = seqlen / expected_len
               q_len = max(1, int(q_len * ratio))
@@ -1582,171 +1560,80 @@ class Diffusion(L.LightningModule):
               e_len = max(1, seqlen - q_len - p_len)
               self.hdp_block_sizes = (q_len, p_len, e_len)
 
-      # HDP-aware initialization
+      # 3. Setup HDP Context
       block_indices = None
-      q_len = 0
+      q_len, p_len, e_len = 0, 0, 0
       
       if self.use_hdp_attention and self.hdp_block_sizes is not None:
           q_len, p_len, e_len = self.hdp_block_sizes
           
-          # Create block_indices for HDP attention mask
-          block_indices = torch.cat([
-              torch.zeros(q_len, dtype=torch.long, device=self.device),
-              torch.ones(p_len, dtype=torch.long, device=self.device),
-              torch.full((e_len,), 2, dtype=torch.long, device=self.device)
-          ]).unsqueeze(0).repeat(n_samples, 1)
+          # Tạo block_indices
+          b_q = torch.zeros(q_len, dtype=torch.long, device=self.device)
+          b_p = torch.ones(p_len, dtype=torch.long, device=self.device)
+          b_e = torch.full((e_len,), 2, dtype=torch.long, device=self.device)
+          block_indices = torch.cat([b_q, b_p, b_e]).unsqueeze(0).repeat(n_samples, 1)
           
-          # If question_tokens provided, use them as fixed context
+          # Setup Question Tokens
           if question_tokens is not None: 
-              # Ensure correct batch size
               if question_tokens.shape[0] == 1 and n_samples > 1:
                   question_tokens = question_tokens.repeat(n_samples, 1)
               
-              # Pad/truncate question to q_len
+              # ✅ FIX: Thêm [BOS] vào đầu câu hỏi (Shift phải 1 vị trí)
+              # Nếu training dùng BOS, inference BẮT BUỘC phải có BOS
+              bos_token = self.tokenizer.bos_token_id if self.tokenizer.bos_token_id is not None else self.tokenizer.cls_token_id
+              if bos_token is None: bos_token = 50256 # Fallback GPT2 default
+              
+              # Chèn BOS vào trước: [Q1, Q2...] -> [BOS, Q1, Q2...]
+              # pad trái 1 token
+              question_tokens = F.pad(question_tokens, (1, 0), value=bos_token)
+              
+              # Cắt hoặc Pad cho đủ q_len
               if question_tokens.shape[1] < q_len:
                   pad_len = q_len - question_tokens.shape[1]
-                  pad_token = self.tokenizer.pad_token_id
-                  if pad_token is None:
-                      pad_token = self.tokenizer.eos_token_id
-                  question_tokens = F.pad(
-                      question_tokens, (0, pad_len), 
-                      value=pad_token
-                  )
+                  pad_token = self.tokenizer.pad_token_id if hasattr(self.tokenizer, 'pad_token_id') else 0
+                  question_tokens = F.pad(question_tokens, (0, pad_len), value=pad_token)
               else:
                   question_tokens = question_tokens[:, :q_len]
               
-              # Set question tokens (they will be kept fixed)
+              # Gán Question vào x
               x[:, :q_len] = question_tokens
-              
-              # 🥇 CRITICAL: Initialize markers at block boundaries
-              # Model was trained with markers in data, so must start with them
-              plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
-              exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
-              
-              if q_len < seqlen:
-                  x[:, q_len] = plan_token_id  # First token of Plan = [PLAN]
-              if q_len + p_len < seqlen:
-                  x[:, q_len + p_len] = exec_token_id  # First token of Exec = [EXECUTION]
           else:
-              # No question provided - set BOS at start + markers
               x[:, 0] = self.tokenizer.bos_token_id
-              
-              # Still need markers for structure
-              plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
-              exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
-              
-              if q_len < seqlen:
-                  x[:, q_len] = plan_token_id
-              if q_len + p_len < seqlen:
-                  x[:, q_len + p_len] = exec_token_id
+
+          # Anchoring
+          plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
+          exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
+          
+          if q_len < seqlen:
+              x[:, q_len] = plan_token_id
+          if q_len + p_len < seqlen:
+              x[:, q_len + p_len] = exec_token_id
+
       else:
-          # Standard (non-HDP) sampling
           x[:, 0] = self.tokenizer.bos_token_id
       
       timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
       dt = (1 - eps) / num_steps
       
-      # ============================================================
-      # SEQUENTIAL DENOISING: DISABLED for now (train/test mismatch)
-      # TODO: Implement sequential training before enabling this
-      # ============================================================
-      USE_SEQUENTIAL_DENOISING = False  # Set to True when sequential training ready
-      
-      if USE_SEQUENTIAL_DENOISING and self.use_hdp_attention and block_indices is not None:
-          # [Sequential denoising code remains but disabled]
-          phase1_steps = num_steps // 2
-          phase2_steps = num_steps - phase1_steps
-          
-          q_len, p_len, e_len = self.hdp_block_sizes
-          plan_start = q_len
-          plan_end = q_len + p_len
-          exec_start = plan_end
-          
-          has_question = (question_tokens is not None and q_len > 0)
-          
-          if has_question:
-              print(f"\n📊 HDP Sequential Denoising (with Question input):")
-              print(f"   Phase 1 (steps 0-{phase1_steps}): Denoise PLAN only (Question frozen)")
-              print(f"   Phase 2 (steps {phase1_steps}-{num_steps}): Denoise EXEC only (Q+Plan frozen)")
-          else:
-              print(f"\n📊 HDP Sequential Denoising (no Question input):")
-              print(f"   Phase 1 (steps 0-{phase1_steps}): Denoise QUESTION + PLAN")
-              print(f"   Phase 2 (steps {phase1_steps}-{num_steps}): Denoise EXEC (Q+Plan frozen)")
-          
-          x_exec_frozen = x[:, exec_start:].clone()
-          
-          if has_question:
-              x_question_frozen = question_tokens.clone()
-          
-          phase1_desc = 'Phase 1: Plan' if has_question else 'Phase 1: Q+Plan'
-          print(f"\n🔵 {phase1_desc}...")
-          for i in tqdm(range(phase1_steps), desc=phase1_desc):
-              t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
-              x_updated = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
-              
-              if has_question:
-                  x_updated[:, :q_len] = x_question_frozen
-              
-              x_updated[:, exec_start:] = x_exec_frozen
-              x = x_updated
-          
-          x_question_plan_clean = x[:, :exec_start].clone()
-          x_plan_clean = x[:, plan_start:plan_end].clone()
-          print(f"✅ Phase 1 complete: Q+Plan denoised, Exec still at noise")
-          
-          print(f"\n🟢 Phase 2: Denoising Execution (conditioned on clean Q+Plan)...")
-          for i in tqdm(range(phase2_steps), desc='Phase 2: Exec'):
-              step_idx = phase1_steps + i
-              t = timesteps[step_idx] * torch.ones(x.shape[0], 1, device=self.device)
-              x_updated = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
-              x_updated[:, :exec_start] = x_question_plan_clean
-              x = x_updated
-          
-          print(f"✅ Phase 2 complete: Exec denoised (conditioned on clean Q+Plan)")
-          
-      else:
-          # ============================================================
-          # PARALLEL DENOISING (Standard - currently active)
-          # All blocks denoised simultaneously with attention mask
-          # ============================================================
-          for i in tqdm(range(num_steps), desc='HDP Sampling' if block_indices is not None else 'Sampling'):
-              t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
+      # 4. Vòng lặp Denoising
+      for i in tqdm(range(num_steps), desc='HDP Sampling'):
+          t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
 
-              x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
-              
-              # 🔍 DEBUG: Check Plan/Exec token distribution
-              if i % 200 == 0 and block_indices is not None:  # Every 200 steps
-                  q_len, p_len, e_len = self.hdp_block_sizes
-                  plan_tokens = x[0, q_len:q_len+p_len]
-                  exec_tokens = x[0, q_len+p_len:]
-                  plan_mask_count = (plan_tokens == self.mask_index).sum().item()
-                  exec_mask_count = (exec_tokens == self.mask_index).sum().item()
-                  
-                  # Count most frequent tokens
-                  unique_plan, plan_counts = torch.unique(plan_tokens, return_counts=True)
-                  unique_exec, exec_counts = torch.unique(exec_tokens, return_counts=True)
-                  top_plan_token = unique_plan[plan_counts.argmax()].item()
-                  top_exec_token = unique_exec[exec_counts.argmax()].item()
-                  
-                  print(f"\n   Step {i}:")
-                  print(f"     Plan: {plan_mask_count}/{p_len} mask_index, most common token: {top_plan_token} ({plan_counts.max().item()} times)")
-                  print(f"     Exec: {exec_mask_count}/{e_len} mask_index, most common token: {top_exec_token} ({exec_counts.max().item()} times)")
-                  if i == 0:
-                      print(f"     First 10 Plan tokens: {plan_tokens[:10].tolist()}")
-                      print(f"     First 10 Exec tokens: {exec_tokens[:10].tolist()}")
-              
-              # Keep question tokens fixed if provided
-              if self.use_hdp_attention and question_tokens is not None:
-                  q_len = self.hdp_block_sizes[0]
-                  x[:, :q_len] = question_tokens
+          # Truyền block_indices
+          x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
+          
+          # Re-enforce Question & Markers
+          if self.use_hdp_attention and question_tokens is not None:
+              x[:, :q_len] = question_tokens
+              x[:, q_len] = plan_token_id
+              x[:, q_len + p_len] = exec_token_id
       
-      # Final denoising step
+      # 5. Final Step
       t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
       x = self._denoiser_update(x=x, t=t, block_indices=block_indices)
       
-      # Final: preserve Question if provided
+      # Final clean-up
       if self.use_hdp_attention and question_tokens is not None:
-          q_len = self.hdp_block_sizes[0]
           x[:, :q_len] = question_tokens
       
       stop, x = self._check_stop_conds(x)
