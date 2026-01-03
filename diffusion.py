@@ -1212,6 +1212,16 @@ class Diffusion(L.LightningModule):
     if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
         pad_token_id = self.tokenizer.pad_token_id
     p_x0[..., pad_token_id] = 0.0
+
+    # 3. Renormalize: Chia lại xác suất cho các token đúng (ví dụ [PLAN])
+    # Điều này giúp xác suất của token đúng tăng lên, model sẽ tự tin unmask hơn
+    p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
+    # =================================================================
+
+    # 3. Tính Posterior (Sau khi p_x0 đã sạch)
+    probs = p_x0 * prob_unmask
+    probs[..., self.mask_index] = prob_stay_masked.squeeze(-1)
+    
     # 🔍 DEBUG: Check final probs before sampling
     if not hasattr(self, '_analytic_update_probs_debug'):
         self._analytic_update_probs_debug = True
@@ -1222,16 +1232,6 @@ class Diffusion(L.LightningModule):
         print(f"   Top 5 tokens: {top_5_idx.tolist()}")
         print(f"   Top 5 probs: {top_5_probs.tolist()}")
         print(f"   Probs sum: {probs[0, 128].sum().item():.6f}")
-    
-    # 
-    # 3. Renormalize: Chia lại xác suất cho các token đúng (ví dụ [PLAN])
-    # Điều này giúp xác suất của token đúng tăng lên, model sẽ tự tin unmask hơn
-    p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
-    # =================================================================
-
-    # 3. Tính Posterior (Sau khi p_x0 đã sạch)
-    probs = p_x0 * prob_unmask
-    probs[..., self.mask_index] = prob_stay_masked.squeeze(-1)
     
     # 4. Sampling
     x_new = _sample_categorical(probs)
