@@ -81,51 +81,158 @@ class Diffusion(L.LightningModule):
     self.save_hyperparameters()
     self.config = config
     self.tokenizer = tokenizer
-    # self.vocab_size = self.tokenizer.vocab_size
-    self.vocab_size = len(self.tokenizer) 
+    
+    # ================================================================
+    # ✅ STEP 1: Add HDP Special Tokens to Tokenizer
+    # ================================================================
+    self.use_hdp_attention = False
+    if hasattr(config.data, 'hdp') and config.data.hdp.get('use_hdp_attention', False):
+        self.use_hdp_attention = True
+        
+        print("\n" + "="*80)
+        print("🔧 Setting up HDP Special Tokens")
+        print("="*80)
+        
+        # Define special tokens
+        special_tokens_map = {
+            'plan': '<|plan|>',
+            'execution': '<|execution|>',
+            'answer': '<|answer|>'
+        }
+        
+        # Check existing vocabulary
+        existing_vocab = set(self.tokenizer.get_vocab().keys())
+        tokens_to_add = []
+        
+        for key, token_str in special_tokens_map.items():
+            if token_str not in existing_vocab:
+                tokens_to_add.append(token_str)
+                print(f"   Will add: {token_str}")
+            else:
+                print(f"   Already exists: {token_str}")
+        
+        # Add new special tokens
+        if tokens_to_add:
+            num_added = self.tokenizer.add_special_tokens({
+                'additional_special_tokens': tokens_to_add
+            })
+            print(f"\n✅ Added {num_added} new special tokens")
+        else:
+            print(f"\n✅ All special tokens already in vocabulary")
+        
+        # Get token IDs (now guaranteed to exist)
+        self.plan_token_id = self.tokenizer.convert_tokens_to_ids('<|plan|>')
+        self.exec_token_id = self.tokenizer.convert_tokens_to_ids('<|execution|>')
+        self.answer_token_id = self.tokenizer.convert_tokens_to_ids('<|answer|>')
+        
+        print(f"\n📍 Special Token IDs:")
+        print(f"   <|plan|>      → {self.plan_token_id}")
+        print(f"   <|execution|> → {self.exec_token_id}")
+        print(f"   <|answer|>    → {self.answer_token_id}")
+        
+    else:
+        # Non-HDP mode: use config values (legacy support)
+        self.plan_token_id = getattr(config.model, 'plan_token_id', None)
+        self.exec_token_id = getattr(config.model, 'execution_token_id', None)
+        self.answer_token_id = getattr(config.model, 'answer_token_id', None)
+        print("\n⚠️  HDP mode disabled, special tokens not added")
+    
+    # ================================================================
+    # ✅ STEP 2: Update Vocab Size
+    # ================================================================
+    self.vocab_size = len(self.tokenizer)
+    print(f"\n📊 Vocabulary size: {self.vocab_size}")
+    
+    # ================================================================
+    # Original config setup (unchanged)
+    # ================================================================
     self.sampler = self.config.algo.sampler
     self.antithetic_sampling = self.config.training.antithetic_sampling
     self.cross_attn = self.config.algo.cross_attn
     self.ignore_bos = self.config.algo.ignore_bos
     self.mdlm_loss_scale = self.config.algo.mdlm_loss_scale
+    
+    # Mask token setup
     if (not hasattr(self.tokenizer, 'mask_token')
         or self.tokenizer.mask_token is None):
-      self.mask_index = self.vocab_size
-      self.vocab_size += 1
+        self.mask_index = self.vocab_size
+        self.vocab_size += 1
+        print(f"   Added mask token at index {self.mask_index}")
     else:
-      self.mask_index = self.tokenizer.mask_token_id
+        self.mask_index = self.tokenizer.mask_token_id
+        print(f"   Using existing mask token at index {self.mask_index}")
+    
+    print(f"   Final vocab size (with mask): {self.vocab_size}")
+    
+    # Parameterization setup
     if hasattr(self.config, 'algo'):
-      self.parameterization = self.config.algo.parameterization
+        self.parameterization = self.config.algo.parameterization
     else:
-      self.parameterization = self.config.parameterization
+        self.parameterization = self.config.parameterization
+    
     if hasattr(self.config, 'block_size'):
-      self.block_size = self.config.block_size
+        self.block_size = self.config.block_size
     else:
-      self.block_size = self.config.model.length
+        self.block_size = self.config.model.length
+    
     if self.parameterization == 'ar':
-      self.block_size = 1
+        self.block_size = 1
+    
+    # ================================================================
+    # ✅ STEP 3: Initialize Backbone with CORRECT vocab_size
+    # ================================================================
+    print(f"\n🏗️  Initializing backbone: {self.config.algo.backbone}")
+    print(f"   Using vocab_size: {self.vocab_size}")
+    
     if self.config.algo.backbone == 'dit':
-      self.backbone = models.dit.DIT(
-        self.config, vocab_size=self.vocab_size)
+        self.backbone = models.dit.DIT(
+            self.config, 
+            vocab_size=self.vocab_size  # ✅ Correct size from start
+        )
+        print(f"   ✅ DIT initialized with vocab_size={self.vocab_size}")
+        
     elif self.config.algo.backbone == 'dimamba':
-      self.backbone = models.dimamba.DiMamba(
-        self.config,
-        vocab_size=self.vocab_size,
-        pad_token_id=self.tokenizer.pad_token_id)
+        self.backbone = models.dimamba.DiMamba(
+            self.config,
+            vocab_size=self.vocab_size,
+            pad_token_id=self.tokenizer.pad_token_id
+        )
+        print(f"   ✅ DiMamba initialized with vocab_size={self.vocab_size}")
+        
     elif self.config.algo.backbone == 'hf_dit':
-      self.backbone = transformers.AutoModelForMaskedLM.from_pretrained(
-        config.eval.checkpoint_path, trust_remote_code=True)
-      #  egenerate mask if pretrained model uses flex attention mask
-      # and current model uses sdpa mask
-      if getattr(self.backbone.config, 'attn_backend', None) == 'flex' and \
-        self.config.model.attn_backend == 'sdpa':
-        self.backbone.config.attn_backend = 'sdpa'
-        for i in self.backbone.backbone.blocks:
-          i.attn_backend = 'sdpa'
-        self.backbone.backbone.gen_mask(self.config.model.length, self.block_size, attn_backend='sdpa')
+        # Load pretrained model
+        self.backbone = transformers.AutoModelForMaskedLM.from_pretrained(
+            config.eval.checkpoint_path, 
+            trust_remote_code=True
+        )
+        
+        # ✅ CRITICAL: Resize embeddings for special tokens
+        old_vocab_size = self.backbone.config.vocab_size
+        if old_vocab_size != self.vocab_size:
+            print(f"   ⚠️  Pretrained vocab size: {old_vocab_size}")
+            print(f"   🔧 Resizing to: {self.vocab_size}")
+            self.backbone.resize_token_embeddings(self.vocab_size)
+            print(f"   ✅ Embeddings resized successfully")
+        
+        # Regenerate mask if needed
+        if getattr(self.backbone.config, 'attn_backend', None) == 'flex' and \
+           self.config.model.attn_backend == 'sdpa':
+            self.backbone.config.attn_backend = 'sdpa'
+            for i in self.backbone.backbone.blocks:
+                i.attn_backend = 'sdpa'
+            self.backbone.backbone.gen_mask(
+                self.config.model.length, 
+                self.block_size, 
+                attn_backend='sdpa'
+            )
     else:
-      raise ValueError(f'Unknown backbone: {self.config.algo.backbone}')
-
+        raise ValueError(f'Unknown backbone: {self.config.algo.backbone}')
+    
+    print("="*80 + "\n")
+    
+    # ================================================================
+    # Rest of __init__ (unchanged)
+    # ================================================================
     self.T = self.config.algo.T
     self.num_tokens = self.config.model.length
 
@@ -133,11 +240,12 @@ class Diffusion(L.LightningModule):
     self.metrics = metrics.Metrics(config)
 
     if self.config.training.ema > 0:
-      self.ema = models.ema.ExponentialMovingAverage(
-        self._get_parameters(),
-        decay=self.config.training.ema)
+        self.ema = models.ema.ExponentialMovingAverage(
+            self._get_parameters(),
+            decay=self.config.training.ema)
     else:
-      self.ema = None
+        self.ema = None
+  
     
     self.var_min = self.config.algo.get('var_min', False)  # Default False
     if self.var_min:
@@ -1501,15 +1609,24 @@ class Diffusion(L.LightningModule):
     # 4. Safety filters (ONLY for HDP modes)
     # ================================================================
     if sampling_mode in ['hdp', 'hdp_oracle']:
-        plan_id   = getattr(self.config.model, "plan_token_id", 50258)
-        exec_id   = getattr(self.config.model, "execution_token_id", 50259)
-        answer_id = getattr(self.config.model, "answer_token_id", 50260)
-        pad_id    = getattr(self.tokenizer, "pad_token_id", 50257)
-
-        logits[..., plan_id]   = self.neg_infinity
-        logits[..., exec_id]   = self.neg_infinity
-        logits[..., answer_id] = self.neg_infinity
-        logits[..., pad_id]    = self.neg_infinity
+        # ✅ Use instance variables (guaranteed to be valid)
+        plan_id = self.plan_token_id
+        exec_id = self.exec_token_id
+        answer_id = self.answer_token_id
+        pad_id = self.tokenizer.pad_token_id
+        
+        # ✅ Safe filtering with bounds check
+        vocab_size = logits.shape[-1]
+        
+        if plan_id is not None and plan_id < vocab_size:
+            logits[..., plan_id] = self.neg_infinity
+        if exec_id is not None and exec_id < vocab_size:
+            logits[..., exec_id] = self.neg_infinity
+        if answer_id is not None and answer_id < vocab_size:
+            logits[..., answer_id] = self.neg_infinity
+        if pad_id is not None and pad_id < vocab_size:
+            logits[..., pad_id] = self.neg_infinity
+        
         logits[..., self.mask_index] = self.neg_infinity
 
     # ================================================================
@@ -1621,21 +1738,23 @@ class Diffusion(L.LightningModule):
     # ================================================================
     if sampling_mode in ['hdp', 'hdp_oracle'] and self.use_hdp_attention and self.hdp_block_sizes is not None:
         q_len, p_len, _ = self.hdp_block_sizes
-        plan_id = getattr(self.config.model, "plan_token_id", 50258)
-        exec_id = getattr(self.config.model, "execution_token_id", 50259)
+        
+        # ✅ Use instance variables
+        plan_id = self.plan_token_id
+        exec_id = self.exec_token_id
 
-        # Freeze question (already done in should_unmask, but double-check)
+        # Freeze question
         x_out[:, :q_len] = x[:, :q_len]
         if x0_pred_next is not None:
             x0_pred_next[:, :q_len] = x[:, :q_len]
 
-        # Force markers
-        if x_out.shape[1] > q_len:
+        # Force markers (with safety check)
+        if plan_id is not None and x_out.shape[1] > q_len:
             x_out[:, q_len] = plan_id
             if x0_pred_next is not None:
                 x0_pred_next[:, q_len] = plan_id
         
-        if x_out.shape[1] > q_len + p_len:
+        if exec_id is not None and x_out.shape[1] > q_len + p_len:
             x_out[:, q_len + p_len] = exec_id
             if x0_pred_next is not None:
                 x0_pred_next[:, q_len + p_len] = exec_id
@@ -1703,20 +1822,25 @@ class Diffusion(L.LightningModule):
         samples = _sample_categorical(p_x0)
         
     elif sampling_mode == 'hdp':
-        # HDP: Categorical sampling (fair comparison with BD3-LM)
         p_x0 = model_output.to(torch.float64).exp()
         
-        # Safety filters (for HDP)
-        pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
-        plan_id = getattr(self.config.model, "plan_token_id", 50258)
-        exec_id = getattr(self.config.model, "execution_token_id", 50259)
-        answer_id = getattr(self.config.model, "answer_token_id", 50260)
+        # ✅ Use instance variables with safety checks
+        pad_token_id = self.tokenizer.pad_token_id
+        plan_id = self.plan_token_id
+        exec_id = self.exec_token_id
+        answer_id = self.answer_token_id
+        
+        vocab_size = p_x0.shape[-1]
         
         p_x0[..., self.mask_index] = 0.0
-        p_x0[..., plan_id] = 0.0
-        p_x0[..., exec_id] = 0.0
-        p_x0[..., answer_id] = 0.0
-        if pad_token_id is not None:
+        
+        if plan_id is not None and plan_id < vocab_size:
+            p_x0[..., plan_id] = 0.0
+        if exec_id is not None and exec_id < vocab_size:
+            p_x0[..., exec_id] = 0.0
+        if answer_id is not None and answer_id < vocab_size:
+            p_x0[..., answer_id] = 0.0
+        if pad_token_id is not None and pad_token_id < vocab_size:
             p_x0[..., pad_token_id] = 0.0
         
         # Renormalize and sample
@@ -1727,16 +1851,16 @@ class Diffusion(L.LightningModule):
         # HDP Oracle: Argmax + confidence gate (ablation)
         logits = model_output
         
-        # Safety filters
+        # Safety filters - use instance variables
         pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
-        plan_id = getattr(self.config.model, "plan_token_id", 50258)
-        exec_id = getattr(self.config.model, "execution_token_id", 50259)
-        answer_id = getattr(self.config.model, "answer_token_id", 50260)
         
         logits[..., self.mask_index] = self.neg_infinity
-        logits[..., plan_id] = self.neg_infinity
-        logits[..., exec_id] = self.neg_infinity
-        logits[..., answer_id] = self.neg_infinity
+        if self.plan_token_id is not None:
+            logits[..., self.plan_token_id] = self.neg_infinity
+        if self.exec_token_id is not None:
+            logits[..., self.exec_token_id] = self.neg_infinity
+        if self.answer_token_id is not None:
+            logits[..., self.answer_token_id] = self.neg_infinity
         if pad_token_id is not None:
             logits[..., pad_token_id] = self.neg_infinity
         
@@ -1766,16 +1890,15 @@ class Diffusion(L.LightningModule):
     if sampling_mode in ['hdp', 'hdp_oracle'] and self.use_hdp_attention and self.hdp_block_sizes is not None:
         q_len, p_len, e_len = self.hdp_block_sizes
         
-        # 1. FREEZE Question block
         samples[:, :q_len] = x[:, :q_len]
         
-        # 2. Force markers
-        plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
-        exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
+        # ✅ Use instance variables
+        plan_token_id = self.plan_token_id
+        exec_token_id = self.exec_token_id
         
-        if samples.shape[1] > q_len:
+        if plan_token_id is not None and samples.shape[1] > q_len:
             samples[:, q_len] = plan_token_id
-        if samples.shape[1] > (q_len + p_len):
+        if exec_token_id is not None and samples.shape[1] > (q_len + p_len):
             samples[:, q_len + p_len] = exec_token_id
     
     return samples
@@ -2147,14 +2270,11 @@ class Diffusion(L.LightningModule):
               q_contents = [torch.tensor([], device=self.device) for _ in range(n_samples)]
               print(f"   ⚠️  No question tokens - using PAD")
 
-          # Anchor markers
-          plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
-          exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
-          
-          if q_len < seqlen:
-              x[:, q_len] = plan_token_id
-          if q_len + p_len < seqlen:
-              x[:, q_len + p_len] = exec_token_id
+          # Anchor markers - use instance variables
+          if self.plan_token_id is not None and q_len < seqlen:
+              x[:, q_len] = self.plan_token_id
+          if self.exec_token_id is not None and q_len + p_len < seqlen:
+              x[:, q_len + p_len] = self.exec_token_id
           
           print(f"   ✅ Markers anchored: <|plan|> at {q_len}, <|execution|> at {q_len+p_len}")
       
@@ -2196,9 +2316,11 @@ class Diffusion(L.LightningModule):
                       x[seq_idx, :l] = content[:l]
                   # Don't touch PAD region (x[seq_idx, l:q_len])
               
-              # Re-anchor markers
-              x[:, q_len] = plan_token_id
-              x[:, q_len + p_len] = exec_token_id
+              # Re-anchor markers - use instance variables
+              if self.plan_token_id is not None:
+                  x[:, q_len] = self.plan_token_id
+              if self.exec_token_id is not None:
+                  x[:, q_len + p_len] = self.exec_token_id
               
               # Also update x0_pred
               if x0_pred is not None:
@@ -2206,8 +2328,10 @@ class Diffusion(L.LightningModule):
                       l = min(len(content), q_len)
                       if l > 0:
                           x0_pred[seq_idx, :l] = content[:l]
-                  x0_pred[:, q_len] = plan_token_id
-                  x0_pred[:, q_len + p_len] = exec_token_id
+                  if self.plan_token_id is not None:
+                      x0_pred[:, q_len] = self.plan_token_id
+                  if self.exec_token_id is not None:
+                      x0_pred[:, q_len + p_len] = self.exec_token_id
       
       # ================================================================
       # 4. Final Denoising Step
@@ -2227,8 +2351,11 @@ class Diffusion(L.LightningModule):
               if l > 0:
                   x[seq_idx, :l] = content[:l]
           
-          x[:, q_len] = plan_token_id
-          x[:, q_len + p_len] = exec_token_id
+          # Use instance variables
+          if self.plan_token_id is not None:
+              x[:, q_len] = self.plan_token_id
+          if self.exec_token_id is not None:
+              x[:, q_len + p_len] = self.exec_token_id
       
       print(f"   ✅ Sampling complete!")
       
