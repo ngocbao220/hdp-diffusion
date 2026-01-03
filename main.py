@@ -152,21 +152,18 @@ def generate_samples(config, logger, tokenizer):
                 # Tokenize questions
                 q_len = config.data.hdp.question_len
                 
-                # 🔧 FIX: Add BOS/EOS tokens to match training format
-                # Training data has <|endoftext|> at start and end
-                # GPT-2: bos_token = eos_token = <|endoftext|>
-                questions_formatted = [
-                    f"{tokenizer.bos_token}{q}{tokenizer.eos_token}" 
-                    for q in questions
-                ]
+                # ✅ CRITICAL: NO BOS/EOS! Training uses add_special_tokens=False
+                # Training format: "Janet's ducks..." (raw text only)
+                # OLD (wrong): "<|endoftext|>Janet's ducks...<|endoftext|>"
+                # NEW (correct): "Janet's ducks..." (match training exactly!)
                 
                 question_tokens = tokenizer(
-                    questions_formatted,
+                    questions,
                     return_tensors='pt',
                     padding='max_length',
                     truncation=True,
                     max_length=q_len,
-                    add_special_tokens=False  # Already added manually
+                    add_special_tokens=False  # ✅ Match training!
                 )['input_ids'].to('cuda')
 
                 logger.info(f'✅ Loaded {len(questions)} test questions for conditional generation')
