@@ -577,11 +577,18 @@ class Diffusion(L.LightningModule):
         model_output = self.forward(x_input, sigma=sigma_low, block_indices=block_indices)
         pred_tokens = model_output.argmax(dim=-1)
         
-        # Compare with ground truth
+        # Compare with ground truth (EXCLUDE PAD tokens!)
         gt_tokens = x0
-        accuracy = (pred_tokens == gt_tokens).float().mean().item()
+        # ⚠️ FIX: Only count non-PAD tokens (PAD = mask_index)
+        non_pad_mask = (gt_tokens != self.mask_index)
+        if non_pad_mask.sum() > 0:
+          accuracy = (pred_tokens[non_pad_mask] == gt_tokens[non_pad_mask]).float().mean().item()
+          num_content_tokens = non_pad_mask.sum().item()
+        else:
+          accuracy = 0.0
+          num_content_tokens = 0
         
-        print(f"Token-level accuracy: {accuracy*100:.2f}%")
+        print(f"Token-level accuracy: {accuracy*100:.2f}% (on {num_content_tokens} content tokens, excluding PAD)")
         print(f"\nFirst 50 tokens comparison:")
         print(f"Ground Truth: {gt_tokens[0, :50].tolist()}")
         print(f"Prediction  : {pred_tokens[0, :50].tolist()}")
@@ -593,13 +600,17 @@ class Diffusion(L.LightningModule):
           print(f"\nGround Truth Text: {gt_text}")
           print(f"Prediction Text  : {pred_text}") 
         
-        # Check by block if HDP
+        # Check by block if HDP (also exclude PAD)
         if block_indices is not None:
-          print(f"\nAccuracy by block:")
+          print(f"\nAccuracy by block (excluding PAD):")
           for block_id in range(3):
-            block_mask = (block_indices == block_id)
-            block_acc = (pred_tokens[block_mask] == gt_tokens[block_mask]).float().mean().item()
-            print(f"  Block {block_id}: {block_acc*100:.2f}%")
+            block_mask = (block_indices == block_id) & non_pad_mask  # AND with non-PAD mask
+            if block_mask.sum() > 0:
+              block_acc = (pred_tokens[block_mask] == gt_tokens[block_mask]).float().mean().item()
+              num_tokens = block_mask.sum().item()
+              print(f"  Block {block_id}: {block_acc*100:.2f}% ({num_tokens} tokens)")
+            else:
+              print(f"  Block {block_id}: N/A (no content tokens)")
         
         print("="*80 + "\n")
     
