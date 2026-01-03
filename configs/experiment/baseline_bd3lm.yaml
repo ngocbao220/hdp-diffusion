@@ -1,0 +1,44 @@
+# Baseline: Pure BD3-LM (Block Diffusion 3-Level Masking)
+# Standard block diffusion without HDP hierarchical structure
+# This is the original algorithm from the paper
+
+# @package _global_
+
+defaults:
+  - override /data: gsm8k_baseline
+  - override /algo: bd3lm
+
+# Experiment identification
+experiment_name: baseline_bd3lm
+
+# Sampler configuration
+algo:
+  sampler: semi_ar # Standard BD3-LM semi-autoregressive sampler
+
+# NO HDP - use standard data format
+data:
+  # Standard GSM8K format (no HDP structure)
+  train_path: data/gsm8k/gsm8k_overfit.json
+  test_path: data/gsm8k/gsm8k_overfit.json
+
+  # Disable HDP
+  hdp:
+    enabled: false # No hierarchical structure
+    use_hdp_attention: false # No special attention mask
+    use_special_format: false # No [PLAN]/[EXECUTION] tokens
+
+# Model configuration
+model:
+  length: 512 # Standard sequence length
+
+# Block size for BD3-LM
+block_size: 16 # Denoise 16 tokens per stride (standard BD3-LM)
+
+# Sampling configuration
+sampling:
+  num_steps: 64 # Steps per block (standard)
+  first_hitting: true # Enable for semi-AR (faster sampling)
+
+# Checkpoint
+checkpointing:
+  save_dir: outputs/baseline_bd3lm

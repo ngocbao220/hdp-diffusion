@@ -1,7 +1,36 @@
 # GSM8K Baseline Configuration (Simple Q&A format)
-train: gsm8k
-valid: gsm8k
+# Standard format without HDP structure: question + answer only
+
+name: gsm8k_baseline
+train: gsm8k_baseline
+valid: gsm8k_baseline
+
+# Data paths - baseline format
+train_path: data/gsm8k/gsm8k_baseline.json
+test_path: data/gsm8k/gsm8k_baseline.json
+
+# Tokenizer
 tokenizer_name_or_path: gpt2
 cache_dir: .cache
-wrap: False
-streaming: False
+
+# Data format
+wrap: false
+streaming: false
+
+# NO HDP structure
+hdp:
+  enabled: false
+  use_hdp_attention: false
+  use_special_format: false
+
+# Sequence length
+max_length: 512
+
+# Vocab - baseline doesn't need special tokens
+vocab_size: 50257
+
+# Special tokens
+insert_train_eos: false
+insert_valid_eos: false
+insert_train_special: false
+insert_valid_special: false
