@@ -162,7 +162,7 @@ class Diffusion(L.LightningModule):
       if self.use_hdp_attention:
         q_len = hdp_config.get('question_len', 128)
         p_len = hdp_config.get('plan_len', 128)
-        e_len = hdp_config. get('exec_len', 256)
+        e_len = hdp_config.get('exec_len', 256)
 
         self.hdp_block_sizes = (
           q_len,  # Question block
@@ -1562,25 +1562,19 @@ class Diffusion(L.LightningModule):
       question_tokens=None
   ): 
       """
-      Analytic sampler: STRICT ALIGNMENT.
-      Ensures Question text is raw (No BOS, No EOS) to match Training Data exact positional embedding.
+      Analytic sampler: HYBRID ALIGNMENT.
+      Try to respect tokenizer's BOS if present.
       """
-      # 1. Khởi tạo
       x = self._sample_prior(n_samples, seqlen).to(self.device)
       
-      print(f"🔍 [_analytic_sampler] Starting sampling (STRICT ALIGNMENT)")
+      print(f"🔍 [_analytic_sampler] Starting sampling (HYBRID ALIGNMENT)")
 
-      # 2. HDP Config (Giữ nguyên)
+      # Config check (giữ nguyên)
       if self.use_hdp_attention:
         if not hasattr(self, 'hdp_block_sizes') or self.hdp_block_sizes is None:
           if hasattr(self.config, 'data') and hasattr(self.config.data, 'hdp'):
-              self.hdp_block_sizes = (
-                  self.config.data.hdp.question_len,
-                  self.config.data.hdp.plan_len,
-                  self.config.data.hdp.exec_len
-              )
-          else:
-              self.use_hdp_attention = False
+              self.hdp_block_sizes = (self.config.data.hdp.question_len, self.config.data.hdp.plan_len, self.config.data.hdp.exec_len)
+          else: self.use_hdp_attention = False
         
         if self.use_hdp_attention and self.hdp_block_sizes is not None:
           expected_len = sum(self.hdp_block_sizes)
@@ -1592,127 +1586,71 @@ class Diffusion(L.LightningModule):
               e_len = max(1, seqlen - q_len - p_len)
               self.hdp_block_sizes = (q_len, p_len, e_len)
 
-      # 3. Setup Layout
+      # Setup
       block_indices = None
       q_len, p_len, e_len = 0, 0, 0
+      pad_token = self.tokenizer.pad_token_id if hasattr(self.tokenizer, 'pad_token_id') else 50257
       
-      pad_token = 50257
-      if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
-          pad_token = self.tokenizer.pad_token_id
-
-      # Các token cần lọc bỏ
-      tokens_to_strip = {
-          50256, # EOS / BOS (GPT2 default)
-          self.tokenizer.bos_token_id,
-          self.tokenizer.eos_token_id
-      }
-      # Loại bỏ None
-      tokens_to_strip = {t for t in tokens_to_strip if t is not None}
-
       if self.use_hdp_attention and self.hdp_block_sizes is not None:
           q_len, p_len, e_len = self.hdp_block_sizes
           
-          # 3.1 Block Indices
           b_q = torch.zeros(q_len, dtype=torch.long, device=self.device)
           b_p = torch.ones(p_len, dtype=torch.long, device=self.device)
           b_e = torch.full((e_len,), 2, dtype=torch.long, device=self.device)
           block_indices = torch.cat([b_q, b_p, b_e]).unsqueeze(0).repeat(n_samples, 1)
           
-          # 3.2 Điền Question (CLEANSED)
           if question_tokens is not None: 
               if question_tokens.shape[0] == 1 and n_samples > 1:
                   question_tokens = question_tokens.repeat(n_samples, 1)
               
-              # --- CLEANSE LOGIC ---
-              # Lọc bỏ BOS/EOS ở đầu và cuối chuỗi
-              # Chuyển về list để xử lý dễ hơn
-              cleaned_batch = []
-              for seq in question_tokens:
-                  # Lấy các token không phải PAD (để tránh lọc nhầm PAD ở giữa nếu có)
-                  # Thực ra input từ tokenizer thường dồn token về trái, PAD về phải.
-                  # Ta chỉ cần lọc đầu và đuôi của phần content.
-                  
-                  # Cắt bỏ PAD ở cuối để lấy content thực
-                  non_pad_idxs = (seq != pad_token).nonzero().flatten()
-                  if len(non_pad_idxs) == 0:
-                      cleaned_batch.append(seq[:0]) # Empty
-                      continue
-                      
-                  start, end = non_pad_idxs[0], non_pad_idxs[-1]
-                  content = seq[start : end+1]
-                  
-                  # Strip BOS/EOS từ content
-                  if content[0].item() in tokens_to_strip:
-                      content = content[1:]
-                  if len(content) > 0 and content[-1].item() in tokens_to_strip:
-                      content = content[:-1]
-                  
-                  cleaned_batch.append(content)
+              # KHÔNG THÊM BOS THỦ CÔNG NỮA
+              # KHÔNG CẮT BOS NẾU CÓ
+              # Cứ để nguyên input từ tokenizer
               
-              # Re-pad và gán vào x
-              for i, content in enumerate(cleaned_batch):
-                  curr_len = len(content)
-                  limit = q_len # Không trừ 1 nữa, dùng full q_len
-                  
-                  if curr_len > limit:
-                      to_write = content[:limit]
-                      x[i, :limit] = to_write
-                  else:
-                      x[i, :curr_len] = content
-                      # Phần còn lại là PAD (đã fill từ step 1 hoặc mặc định 0?)
-                      # Step 1 fill bằng Mask (50261). Ta cần fill PAD (50257).
-                      x[i, curr_len:q_len] = pad_token
+              curr_q_len = question_tokens.shape[1]
+              
+              if curr_q_len > q_len:
+                  q_final = question_tokens[:, :q_len]
+              else:
+                  pad_amt = q_len - curr_q_len
+                  q_final = F.pad(question_tokens, (0, pad_amt), value=pad_token)
+              
+              # Gán vào x từ index 0
+              x[:, :q_len] = q_final
               
           else:
               x[:, :q_len] = pad_token
 
-          # 3.3 Anchoring Markers
+          # Anchoring
           plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
           exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
           
-          if q_len < seqlen:
-              x[:, q_len] = plan_token_id
-          if q_len + p_len < seqlen:
-              x[:, q_len + p_len] = exec_token_id
+          if q_len < seqlen: x[:, q_len] = plan_token_id
+          if q_len + p_len < seqlen: x[:, q_len + p_len] = exec_token_id
 
       else:
-          # Fallback
           x[:, 0] = self.tokenizer.bos_token_id if self.tokenizer.bos_token_id else 50256
       
       timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
       dt = (1 - eps) / num_steps
       
-      # 4. Loop
       for i in tqdm(range(num_steps), desc='HDP Sampling'):
           t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
-
           x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
           
-          # Re-enforce Question & Markers
           if self.use_hdp_attention and question_tokens is not None:
-             # Re-write cleaned question
-             for idx, content in enumerate(cleaned_batch):
-                 l = min(len(content), q_len)
-                 x[idx, :l] = content
-                 x[idx, l:q_len] = pad_token
-             
-             x[:, q_len] = plan_token_id
-             x[:, q_len + p_len] = exec_token_id
+              x[:, :q_len] = q_final
+              x[:, q_len] = plan_token_id
+              x[:, q_len + p_len] = exec_token_id
       
-      # 5. Final
       t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
       x = self._denoiser_update(x=x, t=t, block_indices=block_indices)
       
-      # Final clean-up
       if self.use_hdp_attention and question_tokens is not None:
-         for idx, content in enumerate(cleaned_batch):
-             l = min(len(content), q_len)
-             x[idx, :l] = content
-             x[idx, l:q_len] = pad_token
+          x[:, :q_len] = q_final
       
       stop, x = self._check_stop_conds(x)
-      if stop:
-          return None
+      if stop: return None
       return x
 
   @torch.no_grad

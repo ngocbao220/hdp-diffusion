@@ -21,7 +21,11 @@ import utils
 
 LOGGER = utils.get_logger(__name__)
 
-from hdp_dataset import HDPDataset, collate_hdp_batch, SimpleGSM8KDataset
+# Ensure hdp_dataset is available in your PYTHONPATH or same directory
+try:
+    from hdp_dataset import HDPDataset, collate_hdp_batch, SimpleGSM8KDataset
+except ImportError:
+    LOGGER.warning("Could not import HDPDataset/SimpleGSM8KDataset. HDP functionality will not work.")
 
 def wt_detokenizer(string):
   # contractions
@@ -184,22 +188,6 @@ def get_text8_dataset(cache_dir, max_seq_length=256,
                       drop_last=True, crop_train=False):
   """Adapted from:
     https://github.com/google-research/google-research/blob/master/d3pm/text/datasets.py#L344
-
-    Args:
-      cache_dir: str, path to cache directory.
-      max_seq_length: int, maximum length of sequences.
-          (default: 256, as in D3PM codebase.)
-      drop_last: bool, whether to drop the last incomplete
-          batch. (default: True, as in D3PM codebase.)
-      crop_train: bool, whether to subsample contiguous
-          subsequences from training example. serves to
-          make sure transformer models with absolute position
-          embeddings do not have incorrect position-wise
-          marginals. (default: False, but necessary to match D3PM AR)
-
-    Returns:
-      dataset: dataset.DatasetDict, with keys 'train',
-          'valid', 'test'.
   """
   url = 'http://mattmahoney.net/dc/text8.zip'
   if not crop_train:
@@ -281,11 +269,7 @@ def _group_texts(examples, block_size, bos, eos, insert_special_tokens=True):
   # Concatenate all texts.
   concatenated_examples = list(itertools.chain(* examples['input_ids']))
   total_length = len(concatenated_examples)
-  # TODO(yair): look into not dropping the remainder but rather padding it.
-  # We drop the small remainder, and if the total_length < block_size - 2
-  # we exclude this batch and return an empty dict.
-  # We could add padding if the model supported it instead of
-  # this drop, you can customize this part to your needs.
+  
   if insert_special_tokens:
     new_block_size = block_size - 2  # [BOS] and [EOS] to be added
   else:
@@ -564,9 +548,6 @@ def get_tokenizer(config):
       (tokenizer.bos_token, tokenizer.bos_token_id),
       (tokenizer.eos_token, tokenizer.eos_token_id))
 
-  # For wrapped batches:
-  #  [BOS] sent1 [EOS] sent2-fragment [EOS]
-  #  [BOS] sent2-fragment [EOS] sent3 [EOS]
   if tokenizer.bos_token is None:
     if tokenizer.cls_token is None:
       raise AttributeError(
@@ -579,13 +560,17 @@ def get_tokenizer(config):
         'Tokenizer must have a eos_token '
         f'or sep_token: {tokenizer}')
     tokenizer.eos_token = tokenizer.sep_token
+  
+  # Ensure PAD token exists
   if tokenizer.pad_token is None:
     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
+  # Add HDP Special Tokens
   special_tokens_dict = {'additional_special_tokens': ['[PLAN]', '[EXECUTION]', '[ANSWER]']}
   num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
   if num_added_toks > 0:
     print(f"✅ Tokenizer: Added {num_added_toks} special tokens: {special_tokens_dict['additional_special_tokens']}")
+  
   return tokenizer
 
 
@@ -614,6 +599,7 @@ def get_dataloaders(config, tokenizer, skip_train=False,
     raise ValueError(
       f'Eval Batch Size for {config.eval.batch_size} '
       f'not divisible by {num_gpus}.')
+  
   if skip_train:
     train_set = None
   else:
@@ -726,29 +712,16 @@ def get_dataloaders(config, tokenizer, skip_train=False,
           streaming=config.data.streaming,
           revision=config.data.get("train_revision", None))
 
+  # Standard datasets (non-HDP, non-GSM8K)
   if config.data.valid in ['text8', 'lm1b', 'ag_news']:
     validation_split = 'test'
   else:
     validation_split = 'validation'
+  
   if skip_valid:
     valid_set = None
   else:
-    # Check if using HDP-Diffusion dataset
-    if config.data.valid == 'hdp_diffusion':
-      valid_set = HDPDataset(
-        data_path=config.data.test_path,
-        tokenizer=tokenizer,
-        block_sizes=(
-          config.data.hdp.question_len,
-          config.data.hdp.plan_len,
-          config.data.hdp.exec_len
-        ),
-        add_special_tokens=True,
-        return_block_indices=True,
-        use_special_format=config.data.hdp.get('use_special_format', True)
-      )
-    else:
-      valid_set = get_dataset(
+    valid_set = get_dataset(
         config.data.valid,
         tokenizer,
         wrap=config.data.wrap,
