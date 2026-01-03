@@ -561,7 +561,8 @@ class Diffusion(L.LightningModule):
         # Create noisy input at low noise level (t=0.01 → almost clean)
         t_low = torch.full((x0.shape[0], x0.shape[1]), 0.01, device=self.device)
         _, p_low = self.noise(t_low)
-        xt_low = self.q_xt(x0, p_low)  # Add small amount of noise
+        # Add small noise (use default sampling bounds to avoid resample errors)
+        xt_low = self.q_xt(x0, p_low, sampling_eps_min=1e-3, sampling_eps_max=1.0)
         
         # Compute sigma from p
         sigma_low = self._sigma_from_p(p_low[:, 0].unsqueeze(-1))
