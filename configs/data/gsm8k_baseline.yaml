@@ -5,9 +5,11 @@ name: gsm8k_baseline
 train: gsm8k_baseline
 valid: gsm8k_baseline
 
-# Data paths - baseline format
-train_path: /content/hdp-diffusion/data/gsm8k/gsm8k_baseline.json
-test_path: /content/hdp-diffusion/data/gsm8k/gsm8k_baseline.json
+# Hugging Face dataset - auto download
+dataset_name: openai/gsm8k
+dataset_config: main
+train_split: train
+test_split: test
 
 # Tokenizer
 tokenizer_name_or_path: gpt2
@@ -16,13 +18,13 @@ cache_dir: .cache
 # Data format
 wrap: false
 streaming: false
+use_huggingface: true # Enable HF dataset loading
 
 # NO HDP structure
 hdp:
   enabled: false
   use_hdp_attention: false
   use_special_format: false
-  causal_within_block: false # Required field even when disabled
 
 # Sequence length
 max_length: 512
