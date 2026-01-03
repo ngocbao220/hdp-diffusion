@@ -13,10 +13,14 @@ echo "⚙️  Standard semi-AR sampler, 16 tokens/block"
 echo "=========================================="
 
 python main.py \
-    +experiment=baseline_bd3lm \
     mode=train \
+    data=gsm8k_baseline \
+    algo.sampler=semi_ar \
     trainer.max_steps=500 \
     loader.global_batch_size=1 \
+    block_size=16 \
+    sampling.num_steps=64 \
+    sampling.first_hitting=true \
     checkpointing.save_dir=outputs/test_baseline_bd3lm \
     checkpointing.every_n_train_steps=100
 

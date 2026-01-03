@@ -19,8 +19,11 @@ echo "📦 Checkpoint: $CKPT_PATH"
 echo "=========================================="
 
 python main.py \
-    +experiment=hdp_analytic_att \
     mode=sample_eval \
+    data=hdp_overfit \
+    algo.sampler=ddpm \
+    data.hdp.enabled=true \
+    data.hdp.use_hdp_attention=true \
     eval.checkpoint_path=$CKPT_PATH \
     eval.disable_ema=true \
     sampling.num_sample_batches=1 \

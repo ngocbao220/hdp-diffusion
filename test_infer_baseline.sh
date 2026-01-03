@@ -19,8 +19,10 @@ echo "📦 Checkpoint: $CKPT_PATH"
 echo "=========================================="
 
 python main.py \
-    +experiment=baseline_bd3lm \
     mode=sample_eval \
+    data=gsm8k_baseline \
+    algo.sampler=semi_ar \
+    block_size=16 \
     eval.checkpoint_path=$CKPT_PATH \
     eval.disable_ema=true \
     sampling.num_sample_batches=1 \

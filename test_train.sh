@@ -12,8 +12,16 @@ echo "🔥 Training 500 steps from scratch"
 echo "=========================================="
 
 python main.py \
-    +experiment=hdp_analytic_att \
     mode=train \
+    data=hdp_overfit \
+    algo.sampler=ddpm \
+    data.hdp.enabled=true \
+    data.hdp.use_hdp_attention=true \
+    data.hdp.use_special_format=true \
+    data.hdp.question_len=128 \
+    data.hdp.plan_len=128 \
+    data.hdp.exec_len=256 \
+    model.length=512 \
     trainer.max_steps=500 \
     loader.global_batch_size=1 \
     data.train_path=data/gsm8k/gsm8k_overfit.json \
