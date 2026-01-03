@@ -60,7 +60,7 @@ GRAD_ACCUM=1
 # Training Hyperparameters
 MAX_STEPS=500                    # Total training steps
 WARMUP_STEPS=10                  # Warmup steps
-VAL_EVERY_N_EPOCH=100             # Validate every N epochs
+VAL_EVERY_N_EPOCH=50             # Validate every N epochs (reduced for stability)
 LOG_INTERVAL=10                  # Log every N steps
 LR=1e-4                          # Learning rate (1e-4 stable, 3e-4 faster)
 EMA=0.9999                       # EMA decay rate
@@ -71,7 +71,7 @@ GRAD_CLIP=1.0                    # Gradient clipping value
 DEVICES=1                        # Number of GPUs
 NUM_NODES=1                      # Number of nodes
 PRECISION="bf16-mixed"           # bf16-mixed, fp16, fp32
-STRATEGY="ddp"                   # ddp, deepspeed, fsdp
+STRATEGY="auto"                  # auto for single GPU (ddp causes issues)
 
 # Optional: Start from pretrained checkpoint
 PRETRAIN_CKPT=null

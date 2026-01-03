@@ -941,6 +941,11 @@ class Diffusion(L.LightningModule):
 
   def on_validation_epoch_start(self):
     self.metrics.reset()
+    # Clear CUDA cache before validation
+    if torch.cuda.is_available():
+      torch.cuda.empty_cache()
+      torch.cuda.synchronize()
+    
     if self.ema:
       self.ema.store(itertools.chain(
         self.backbone.parameters(),
@@ -1046,8 +1051,15 @@ class Diffusion(L.LightningModule):
         if torch.cuda.is_available():
           torch.cuda.empty_cache()
     
+    # Restore EMA and cleanup
     if self.ema:
       self.ema.restore(self._get_parameters())
+    
+    # Final cleanup after validation
+    if torch.cuda.is_available():
+      torch.cuda.empty_cache()
+      torch.cuda.synchronize()
+    
     if self.var_min and not self.trainer.sanity_checking:
       self._clipped_schedule_search()
       self.log('sampling_eps_min',
