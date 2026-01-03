@@ -1224,6 +1224,18 @@ class Diffusion(L.LightningModule):
       plan_token_id = getattr(self.config.model, 'plan_token_id', None)
       exec_token_id = getattr(self.config.model, 'execution_token_id', None)
       
+      # Debug first call
+      if not hasattr(self, '_marker_debug_printed'):
+        self._marker_debug_printed = True
+        print(f"\n🥇 [MARKER ANCHORING] DEBUG:")
+        print(f"   plan_token_id: {plan_token_id}")
+        print(f"   exec_token_id: {exec_token_id}")
+        print(f"   plan_marker_pos: {plan_marker_pos}")
+        print(f"   exec_marker_pos: {exec_marker_pos}")
+        print(f"   seq_len: {seq_len}")
+        print(f"   x_out[0, {plan_marker_pos}] BEFORE: {x_out[0, plan_marker_pos].item()}")
+        print(f"   x_out[0, {exec_marker_pos}] BEFORE: {x_out[0, exec_marker_pos].item()}")
+      
       # Create marker mask and replacement tensor
       marker_mask = torch.zeros_like(x_out, dtype=torch.bool)
       marker_values = x_out.clone()
@@ -1237,6 +1249,13 @@ class Diffusion(L.LightningModule):
       
       # Apply markers (non-in-place)
       x_out = torch.where(marker_mask, marker_values, x_out)
+      
+      # Debug after apply
+      if not hasattr(self, '_marker_after_printed'):
+        self._marker_after_printed = True
+        print(f"   x_out[0, {plan_marker_pos}] AFTER: {x_out[0, plan_marker_pos].item()}")
+        print(f"   x_out[0, {exec_marker_pos}] AFTER: {x_out[0, exec_marker_pos].item()}")
+        print(f"   marker_mask sum: {marker_mask.sum().item()}")
     
     return x_out
 
