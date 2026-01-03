@@ -547,8 +547,71 @@ class Diffusion(L.LightningModule):
              on_epoch=False,
              sync_dist=True)
     
-    # 🔍 DEBUG: Check if model learned anything
-    if self.global_step % 100 == 0:
+    # 🔍 DEBUG: Baseline model training check (simpler than HDP)
+    if block_indices is None and self.global_step % 50 == 0:
+      with torch.no_grad():
+        print("\n" + "="*80)
+        print(f"🔍 [BASELINE] Training Check at step {self.global_step}")
+        print("="*80)
+        
+        x0 = batch['input_ids']
+        attention_mask = batch.get('attention_mask', None)
+        
+        # Sample t at average training noise level (t ~ 0.5)
+        t_random = self._sample_t(x0.shape, self.device, 
+                                   sampling_eps_min=1e-3, 
+                                   sampling_eps_max=1.0)
+        _, p_random = self.noise(t_random)
+        xt_random = self.q_xt(x0, p_random, sampling_eps_min=1e-3, sampling_eps_max=1.0)
+        
+        # Log masking stats
+        avg_t = t_random.mean().item()
+        num_masked = (xt_random == self.mask_index).sum().item()
+        total_tokens = xt_random.numel()
+        print(f"Noise level t: {avg_t:.3f}, Masked: {num_masked}/{total_tokens} ({num_masked/total_tokens*100:.1f}%)")
+        
+        # Forward pass
+        sigma_random = self._sigma_from_p(p_random[:, 0].unsqueeze(-1))
+        if self.cross_attn:
+          x_input = torch.cat((xt_random, x0), dim=-1)
+        else:
+          x_input = xt_random
+        
+        model_output = self.forward(x_input, sigma=sigma_random, block_indices=None)
+        pred_tokens = model_output.argmax(dim=-1)
+        
+        # Calculate accuracy (exclude PAD)
+        gt_tokens = x0
+        if attention_mask is not None:
+          non_pad_mask = attention_mask.bool()
+        else:
+          non_pad_mask = torch.ones_like(gt_tokens, dtype=torch.bool)
+        
+        if non_pad_mask.sum() > 0:
+          accuracy = (pred_tokens[non_pad_mask] == gt_tokens[non_pad_mask]).float().mean().item()
+          num_content = non_pad_mask.sum().item()
+        else:
+          accuracy = 0.0
+          num_content = 0
+        
+        print(f"Accuracy: {accuracy*100:.2f}% (on {num_content} content tokens)")
+        print(f"Loss: {losses.loss.item():.6f}")
+        
+        # Show sample predictions
+        print(f"\nFirst 30 tokens:")
+        print(f"GT  : {gt_tokens[0, :30].tolist()}")
+        print(f"Pred: {pred_tokens[0, :30].tolist()}")
+        
+        if hasattr(self, 'tokenizer'):
+          gt_text = self.tokenizer.decode(gt_tokens[0, :100], skip_special_tokens=False)
+          pred_text = self.tokenizer.decode(pred_tokens[0, :100], skip_special_tokens=False)
+          print(f"\nGround Truth: {gt_text[:200]}...")
+          print(f"Prediction  : {pred_text[:200]}...")
+        
+        print("="*80 + "\n")
+    
+    # 🔍 DEBUG: Check if model learned anything (HDP)
+    if block_indices is not None and self.global_step % 100 == 0:
       with torch.no_grad():
         print("\n" + "="*80)
         print(f"🔍 [training_step] MODEL LEARNING CHECK at step {self.global_step}")

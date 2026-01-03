@@ -1,0 +1,29 @@
+# GSM8K Baseline Overfit Configuration (1 sample only)
+# Test if baseline model can overfit a single example
+
+name: gsm8k_baseline_overfit
+train: gsm8k_baseline_overfit
+valid: gsm8k_baseline_overfit
+
+# Data paths - single sample for overfit test
+train_path: /content/hdp-diffusion/data/gsm8k/gsm8k_baseline_overfit.json
+test_path: /content/hdp-diffusion/data/gsm8k/gsm8k_baseline_overfit.json
+
+# Tokenizer
+tokenizer_name_or_path: gpt2
+cache_dir: .cache
+
+# Data format
+wrap: false
+streaming: false
+
+# NO HDP structure
+hdp:
+  enabled: false
+  use_hdp_attention: false
+  use_special_format: false
+  causal_within_block: false # Required field even when disabled
+
+# Sequence length
+max_length: 512
+# Vocab - baseline doesn't need special tokens
