@@ -1027,14 +1027,7 @@ class Diffusion(L.LightningModule):
           List of decoded text samples
       """
       # DEBUG: Check which sampler will be used
-      print(f"\n{'='*70}")
-      print(f"🔍 [_sample] Called with:")
-      print(f"{'='*70}")
-      print(f"parameterization: {self.parameterization}")
-      print(f"sampler: {self.sampler}")
-      print(f"seqlen: {seqlen}")
-      print(f"num_steps: {num_steps}")
-      print(f"question_tokens: {'provided' if question_tokens is not None else 'None'}")
+
       
       if seqlen is None:
           seqlen = self.config.model.length
@@ -1043,8 +1036,6 @@ class Diffusion(L.LightningModule):
       samples = []
       
       if self.parameterization == 'ar':
-          print(f"➡️  Using AR sampler")
-          print(f"{'='*70}\n")
           for _ in range(self.config.sampling.num_sample_batches):
               sample_i, num_tries = None, 0
               while sample_i is None:
@@ -1058,8 +1049,6 @@ class Diffusion(L.LightningModule):
           return self. tokenizer.batch_decode(samples)
       
       if self.sampler == 'semi_ar':
-          print(f"➡️  Using Semi-AR sampler")
-          print(f"{'='*70}\n")
           for _ in range(self.config.sampling. num_sample_batches):
               sample_i, num_tries = None, 0
               while sample_i is None: 
@@ -1068,15 +1057,14 @@ class Diffusion(L.LightningModule):
                       n_samples=batch_size_per_gpu,
                       num_strides=(seqlen // self.block_size), 
                       num_steps=num_steps,
-                      seqlen=seqlen)
+                      seqlen=seqlen,
+                      question_tokens=question_tokens)  # ✅ Pass question tokens
                   if num_tries > 10:
                       raise ValueError('Sampling failed.')
               samples.append(sample_i)
               self.metrics.nfes.update(nfes)
               self.metrics.gen_nfes. append(nfes)
       else:
-          print(f"➡️  Using Analytic sampler (DDPM/default)")
-          print(f"{'='*70}\n")
           nfes = num_steps
           for _ in range(self.config.sampling. num_sample_batches):
               sample_i, num_tries = None, 0
@@ -1538,8 +1526,6 @@ class Diffusion(L.LightningModule):
           Generated samples tensor
       """
       x = self._sample_prior(n_samples, seqlen).to(self.device)
-
-      print(f"\n{'='*70}")
       print(f"🔍 [_analytic_sampler] Starting sampling")
       print(f"{'='*70}")
       print(f"use_hdp_attention: {self.use_hdp_attention}")
@@ -1561,41 +1547,29 @@ class Diffusion(L.LightningModule):
                   self.config.data.hdp.plan_len,
                   self.config.data.hdp.exec_len
               )
-              print(f"   ✅ Reconstructed hdp_block_sizes: {self.hdp_block_sizes}")
           else:
-              print(f"   ❌ Cannot reconstruct! Disabling HDP attention.")
               self.use_hdp_attention = False
         
         # Validate block sizes match seqlen
         if self.use_hdp_attention and self.hdp_block_sizes is not None:
           expected_len = sum(self.hdp_block_sizes)
           if expected_len != seqlen:
-            print(f"⚠️  WARNING: hdp_block_sizes sum ({expected_len}) != seqlen ({seqlen})")
             if seqlen < 50:  # Too short for HDP
-              print(f"   ❌ seqlen ({seqlen}) too short for HDP! Disabling HDP attention.")
               self.use_hdp_attention = False
             else:
-              print(f"   Adjusting block sizes proportionally to match seqlen...")
               q_len, p_len, e_len = self.hdp_block_sizes
               ratio = seqlen / expected_len
-              q_len = max(1, int(q_len * ratio))  # At least 1
-              p_len = max(1, int(p_len * ratio))  # At least 1
-              e_len = max(1, seqlen - q_len - p_len)  # At least 1
+              q_len = max(1, int(q_len * ratio))
+              p_len = max(1, int(p_len * ratio))
+              e_len = max(1, seqlen - q_len - p_len)
               self.hdp_block_sizes = (q_len, p_len, e_len)
-              print(f"   ✅ Adjusted hdp_block_sizes: {self.hdp_block_sizes}")
 
       # HDP-aware initialization
       block_indices = None
       q_len = 0
       
-      print(f"\n🔍 About to create block_indices:")
-      print(f"   use_hdp_attention: {self.use_hdp_attention}")
-      print(f"   hdp_block_sizes: {self.hdp_block_sizes if hasattr(self, 'hdp_block_sizes') else 'N/A'}")
-      
       if self.use_hdp_attention and self.hdp_block_sizes is not None:
-          print(f"✅ Creating block_indices for HDP")
           q_len, p_len, e_len = self.hdp_block_sizes
-          print(f"   Block sizes: q={q_len}, p={p_len}, e={e_len}")
           
           # Create block_indices for HDP attention mask
           block_indices = torch.cat([
@@ -1603,8 +1577,6 @@ class Diffusion(L.LightningModule):
               torch.ones(p_len, dtype=torch.long, device=self.device),
               torch.full((e_len,), 2, dtype=torch.long, device=self.device)
           ]).unsqueeze(0).repeat(n_samples, 1)
-          print(f"   ✅ block_indices.shape: {block_indices.shape}")
-          print(f"   ✅ unique blocks: {torch.unique(block_indices).tolist()}")
           
           # If question_tokens provided, use them as fixed context
           if question_tokens is not None: 
@@ -1627,18 +1599,11 @@ class Diffusion(L.LightningModule):
               
               # Set question tokens (they will be kept fixed)
               x[:, :q_len] = question_tokens
-              print(f"✅ HDP Sampling: Using provided question tokens (len={q_len})")
           else:
               # No question provided - set BOS at start
               x[:, 0] = self.tokenizer.bos_token_id
-              print(f"⚠️ HDP Sampling: No question provided, generating from scratch")
       else:
           # Standard (non-HDP) sampling
-          print(f"❌ NOT creating block_indices!")
-          if not self.use_hdp_attention:
-              print(f"   Reason: use_hdp_attention=False")
-          elif self.hdp_block_sizes is None:
-              print(f"   Reason: hdp_block_sizes is None")
           x[:, 0] = self.tokenizer.bos_token_id
       
       timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
@@ -1707,32 +1672,7 @@ class Diffusion(L.LightningModule):
           # PARALLEL DENOISING (Standard - currently active)
           # All blocks denoised simultaneously with attention mask
           # ============================================================
-          print(f"\n📊 HDP Parallel Denoising (attention mask only):")
-          print(f"   All blocks denoised simultaneously")
-          print(f"   Hierarchy enforced by attention mask:")
-          print(f"     - Plan attends to Question only")
-          print(f"     - Exec attends to Question + Plan")
-          
-          if block_indices is not None:
-              print(f"   ✅ HDP mode: block_indices provided (shape={block_indices.shape})")
-          else:
-              print(f"   ⚠️  Standard mode: no block_indices")
-          
-          # 🔍 DEBUG: Check INITIAL state before denoising loop
-          if block_indices is not None:
-              q_len, p_len, e_len = self.hdp_block_sizes
-              print(f"\n🔍 INITIAL STATE (before denoising loop):")
-              print(f"   x.shape: {x.shape}")
-              print(f"   mask_index: {self.mask_index}")
-              print(f"   First 10 Question tokens: {x[0, :10].tolist()}")
-              print(f"   First 10 Plan tokens: {x[0, q_len:q_len+10].tolist()}")
-              print(f"   First 10 Exec tokens: {x[0, q_len+p_len:q_len+p_len+10].tolist()}")
-              plan_init = x[0, q_len:q_len+p_len]
-              exec_init = x[0, q_len+p_len:]
-              print(f"   Plan mask_index count: {(plan_init == self.mask_index).sum().item()}/{p_len}")
-              print(f"   Exec mask_index count: {(exec_init == self.mask_index).sum().item()}/{e_len}")
-          
-          for i in tqdm(range(num_steps), desc='HDP Parallel Sampling' if block_indices is not None else 'Sampling'):
+          for i in tqdm(range(num_steps), desc='HDP Sampling' if block_indices is not None else 'Sampling'):
               t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
 
               x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
@@ -1779,7 +1719,7 @@ class Diffusion(L.LightningModule):
 
   @torch.no_grad
   def _semi_ar_sampler(
-    self, n_samples, num_steps, num_strides, seqlen, context_size=1024):
+    self, n_samples, num_steps, num_strides, seqlen, context_size=1024, question_tokens=None):
     if seqlen is None:
       seqlen = self.config.model.length
     sampling_steps = 0
