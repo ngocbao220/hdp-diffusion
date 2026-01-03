@@ -13,19 +13,22 @@ echo "=========================================="
 
 python main.py \
     mode=train \
+    model=tiny \
     data=hdp_overfit \
-    algo.sampler=ddpm \
-    data.hdp.enabled=true \
-    data.hdp.use_hdp_attention=true \
-    data.hdp.use_special_format=true \
-    data.hdp.question_len=128 \
-    data.hdp.plan_len=128 \
-    data.hdp.exec_len=256 \
     model.length=512 \
-    trainer.max_steps=500 \
+    algo=bd3lm \
+    algo.backbone=dit \
+    algo.sampler=ddpm \
     loader.global_batch_size=1 \
-    data.train_path=data/gsm8k/gsm8k_overfit.json \
-    data.test_path=data/gsm8k/gsm8k_overfit.json \
+    loader.batch_size=1 \
+    loader.eval_batch_size=1 \
+    optim.lr=1e-4 \
+    trainer.max_steps=500 \
+    trainer.accumulate_grad_batches=1 \
+    trainer.log_every_n_steps=10 \
+    trainer.devices=1 \
+    trainer.precision=bf16-mixed \
+    sampling.num_steps=1000 \
     checkpointing.save_dir=outputs/test_hdp_analytic_att \
     checkpointing.every_n_train_steps=100
 
