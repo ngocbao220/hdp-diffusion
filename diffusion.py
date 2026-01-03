@@ -1246,7 +1246,7 @@ class Diffusion(L.LightningModule):
     return x_out
 
 
-   def _denoiser_update(self, x, t, block_indices=None):
+  def _denoiser_update(self, x, t, block_indices=None):
     """Final denoising step with SAFETY FILTER."""
     sigma = self._sigma_from_p(self.noise(t)[1])
     
