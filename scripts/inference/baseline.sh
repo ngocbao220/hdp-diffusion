@@ -24,9 +24,13 @@ BACKBONE="dit"                       # dit, transformer
 
 # Sampling Settings
 SAMPLER="semi_ar"                    # ddpm (analytic), semi_ar (block-wise) - baseline thường dùng semi_ar
-NUM_SAMPLING_STEPS=1000              # Number of denoising steps (ignored for semi_ar)
+# ⚠️  IMPORTANT: BD3-LM uses T=0 (continuous time)
+# - For continuous time, 100-250 steps is usually ENOUGH
+# - This is DIFFERENT from discrete T=1000 (which needs 1000 steps)
+# - Too many steps can cause over-smoothing, too few cause under-denoising
+NUM_SAMPLING_STEPS=100               # Number of denoising steps for continuous time (100-250 recommended)
 BLOCK_SIZE=16                        # Block size (phải khớp với training)
-TOTAL_DIFFUSION_STEPS=1000           # algo.T value
+TOTAL_DIFFUSION_STEPS=0              # algo.T value: 0 = continuous time
 
 # Generation Settings
 NUM_SAMPLE_BATCHES=5                 # Number of batches to generate

@@ -1,8 +1,12 @@
 name: bd3lm
-backbone: dit  # dit / dimamba / hf_dit
+backbone: dit # dit / dimamba / hf_dit
 parameterization: subs
 time_conditioning: False
-T: 0  # 0 (continuous time) / 1000 
+# ⚠️  IMPORTANT: T=0 means CONTINUOUS TIME diffusion
+# - Training: Sample timestep t uniformly from [0,1] continuous
+# - Inference: Discretize [0,1] into num_sampling_steps (e.g., 100-250 steps is enough)
+# - This is DIFFERENT from discrete T=1000 (which needs 1000 steps)
+T: 0 # 0 (continuous time) / 1000 (discrete timesteps)
 causal_attention: False
 dropout: 0.0
 ignore_bos: True

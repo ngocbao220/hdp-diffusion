@@ -37,7 +37,9 @@ def _load_from_checkpoint(config, tokenizer):
 
   # 🔧 FIX: Add special tokens to tokenizer to match training
   # Training adds: [PAD], [PLAN], [EXECUTION], [ANSWER]
-  # This increases vocab from 50257 → 50261
+  # GPT-2 base vocab: 50257
+  # After adding special tokens: 50257 + 4 = 50261
+  # But checkpoint might have 50262 if extra token was added during training
   if not tokenizer.pad_token:
     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
   
@@ -60,10 +62,19 @@ def _load_from_checkpoint(config, tokenizer):
       print(f"\n🔧 Checkpoint vocab_size: {checkpoint_vocab_size}")
       print(f"   Tokenizer vocab_size: {len(tokenizer)}")
       
-      # Override config vocab_size to match checkpoint
+      # ✅ FIX: Resize tokenizer to match checkpoint exactly
+      # This prevents "index out of range" errors when model predicts tokens >= tokenizer vocab
       if checkpoint_vocab_size != len(tokenizer):
-        print(f"   ⚠️  MISMATCH DETECTED! Adjusting model vocab_size to {checkpoint_vocab_size}")
-        # Temporarily disable struct mode to add new key
+        print(f"   ⚠️  MISMATCH DETECTED! Resizing tokenizer to {checkpoint_vocab_size}")
+        
+        # Add dummy tokens to reach checkpoint vocab size
+        num_missing = checkpoint_vocab_size - len(tokenizer)
+        if num_missing > 0:
+          dummy_tokens = [f'<|dummy_{i}|>' for i in range(num_missing)]
+          tokenizer.add_tokens(dummy_tokens)
+          print(f"   ✅ Added {num_missing} dummy tokens to tokenizer")
+        
+        # Also update config vocab_size
         omegaconf.OmegaConf.set_struct(config, False)
         config.model.vocab_size = checkpoint_vocab_size
         omegaconf.OmegaConf.set_struct(config, True)
@@ -174,8 +185,11 @@ def generate_samples(config, logger, tokenizer):
             logger.warning('No test data path configured - unconditional generation')
 
     # Generate samples
+    # 🔧 FIX: Pass seqlen explicitly for semi-AR sampler
+    # Semi-AR generates block-by-block and needs to know total sequence length
     text_samples = model.restore_model_and_sample(
         num_steps=config.sampling.get('num_steps', config.algo.T),
+        seqlen=config.model.length,  # ✅ CRITICAL: Pass seqlen=512 for semi-AR
         question_tokens=question_tokens
     )
 
