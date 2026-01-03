@@ -1007,6 +1007,21 @@ class Diffusion(L.LightningModule):
     p_x0[:, -self.block_size:] = p_x0_
     return p_x0
 
+  def log_sample_categorical(self, logits):
+    """Sample from categorical distribution given logits (log probabilities).
+    Numerically stable sampling in log space for discrete diffusion (T > 0).
+    
+    Args:
+        logits: Log probabilities, shape (batch, seq_len, vocab_size)
+    
+    Returns:
+        Sampled token indices, shape (batch, seq_len)
+    """
+    # Use the global _sample_categorical function
+    # Convert logits to probabilities
+    probs = logits.exp()
+    return _sample_categorical(probs)
+
   @torch.no_grad()
   def _ddpm_caching_update(self, x, t, dt, p_x0=None):
     _, move_chance_t = self.noise(t)
