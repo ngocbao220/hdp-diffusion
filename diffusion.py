@@ -1197,7 +1197,9 @@ class Diffusion(L.LightningModule):
     # Only unmask tokens where model is confident (high prob for non-mask token)
     
     # Get probability of NOT staying masked
-    unmask_confidence = 1.0 - probs[..., self.mask_index]
+    # Safety: clamp to [0, 1] and handle potential NaN/Inf
+    unmask_confidence = 1.0 - probs[..., self.mask_index].clamp(0, 1)
+    unmask_confidence = torch.nan_to_num(unmask_confidence, nan=0.0, posinf=1.0, neginf=0.0)
     
     # Bernoulli sampling: unmask with probability = unmask_confidence
     should_unmask = torch.bernoulli(unmask_confidence).bool()
