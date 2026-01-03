@@ -1213,6 +1213,7 @@ class Diffusion(L.LightningModule):
     x_out = torch.where(is_mask, x_new, x)
     
     # 🥇 HARD POSITION ANCHOR: Force markers at block boundaries
+    # Use scatter instead of in-place assignment for inference
     if block_indices is not None and hasattr(self.config.model, 'hdp_block_sizes'):
       q_len, p_len, e_len = self.config.model.hdp_block_sizes
       plan_marker_pos = q_len
@@ -1223,10 +1224,19 @@ class Diffusion(L.LightningModule):
       plan_token_id = getattr(self.config.model, 'plan_token_id', None)
       exec_token_id = getattr(self.config.model, 'execution_token_id', None)
       
+      # Create marker mask and replacement tensor
+      marker_mask = torch.zeros_like(x_out, dtype=torch.bool)
+      marker_values = x_out.clone()
+      
       if plan_token_id is not None and plan_marker_pos < seq_len:
-        x_out[:, plan_marker_pos] = plan_token_id
+        marker_mask[:, plan_marker_pos] = True
+        marker_values[:, plan_marker_pos] = plan_token_id
       if exec_token_id is not None and exec_marker_pos < seq_len:
-        x_out[:, exec_marker_pos] = exec_token_id
+        marker_mask[:, exec_marker_pos] = True
+        marker_values[:, exec_marker_pos] = exec_token_id
+      
+      # Apply markers (non-in-place)
+      x_out = torch.where(marker_mask, marker_values, x_out)
     
     return x_out
 
@@ -1388,17 +1398,22 @@ class Diffusion(L.LightningModule):
       
       # 🥇 HARD POSITION ANCHOR: Never mask marker tokens at block boundaries
       # Markers should always be visible to teach model the structure
+      # Use torch.where instead of in-place assignment to avoid autograd issues
       if hasattr(self.config.model, 'hdp_block_sizes'):
         q_len, p_len, e_len = self.config.model.hdp_block_sizes
         plan_marker_pos = q_len  # First token of Plan block
         exec_marker_pos = q_len + p_len  # First token of Exec block
         seq_len = x0.shape[1]
         
-        # Force markers to stay unmasked (with bounds check)
+        # Create mask for marker positions
+        marker_mask = torch.zeros_like(xt, dtype=torch.bool)
         if plan_marker_pos < seq_len:
-          xt[:, plan_marker_pos] = x0[:, plan_marker_pos]
+          marker_mask[:, plan_marker_pos] = True
         if exec_marker_pos < seq_len:
-          xt[:, exec_marker_pos] = x0[:, exec_marker_pos]
+          marker_mask[:, exec_marker_pos] = True
+        
+        # Force markers to stay unmasked (non-in-place)
+        xt = torch.where(marker_mask, x0, xt)
     
     x_input = xt
     if self.cross_attn:
