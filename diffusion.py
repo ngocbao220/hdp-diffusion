@@ -1204,69 +1204,48 @@ class Diffusion(L.LightningModule):
     is_mask = (x == self.mask_index)
     x_out = torch.where(is_mask, x_new, x)
     
-    # =================================================================
-    # ⚓ ANCHORING (Mớm lời cho Model) - QUAN TRỌNG NHẤT
-    # =================================================================
-    if self.use_hdp_attention and self.hdp_block_sizes is not None:
-        q_len, p_len, e_len = self.hdp_block_sizes
-        
-        # Lấy ID của [PLAN] và [EXECUTION]
-        # Theo log của bạn: [PLAN]=50258, [EXECUTION]=50259
-        plan_token_id = 50258 
-        exec_token_id = 50259
-        
-        # Nếu model có config thì lấy, không thì dùng hardcode trên
-        if hasattr(self.config.model, 'plan_token_id'):
-            plan_token_id = self.config.model.plan_token_id
-        if hasattr(self.config.model, 'execution_token_id'):
-            exec_token_id = self.config.model.execution_token_id
-            
-        # ÉP BUỘC token đầu tiên của Plan và Execution phải đúng
-        # Chỉ ép nếu vị trí đó đang là Mask hoặc đã bị điền sai (không phải marker)
-        
-        # 1. Force [PLAN] at index 128 (q_len)
-        if x_out.shape[1] > q_len:
-            # Luôn luôn ép token này phải là [PLAN], bất kể t là bao nhiêu
-            # Điều này giúp model định hướng được context
-            x_out[:, q_len] = plan_token_id
-            
-        # 2. Force [EXECUTION] at index 256 (q_len + p_len)
-        if x_out.shape[1] > (q_len + p_len):
-            x_out[:, q_len + p_len] = exec_token_id
-            
+    # Note: Markers were initialized at the start of sampling
+    # Model has learned to generate markers from training data
+    # No need to force them at every step
+    
     return x_out
 
 
   def _denoiser_update(self, x, t, block_indices=None):
-    """Final denoising step with SAFETY + ANCHORING."""
+    """
+    Final denoising step: Simplified version.
+    Directly samples from the model's predicted x0 distribution.
+    Removes dependency on _transp_transition and _staggered_score.
+    """
+    # 1. Lấy độ nhiễu hiện tại
     sigma = self._sigma_from_p(self.noise(t)[1])
-    score = self.get_score(x, sigma, block_indices=block_indices)
     
-    # Safety Filter
-    score[..., self.mask_index] = 0.0
+    # 2. Lấy dự đoán của model (P(x0 | xt))
+    # Hàm này trả về xác suất đã qua softmax/nucleus
+    p_x0 = self.get_score(x, sigma, block_indices=block_indices)
+    
+    # =================================================================
+    # 🛡️ SAFETY FILTER (Giữ nguyên để chống PAD/MASK)
+    # =================================================================
+    # Cấm Mask
+    p_x0[..., self.mask_index] = 0.0
+    
+    # Cấm PAD (50257)
     pad_id = 50257
-    if hasattr(self.tokenizer, 'pad_token_id'): pad_id = self.tokenizer.pad_token_id
-    score[..., pad_id] = 0.0
-    score = score / (score.sum(dim=-1, keepdim=True) + 1e-8)
-
-    stag_score = self._staggered_score(score, sigma)
-    probs = stag_score * self._transp_transition(x, sigma)
-    probs[..., self.mask_index] = 0
-    probs = probs / (probs.sum(dim=-1, keepdim=True) + 1e-8)
+    if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
+        pad_id = self.tokenizer.pad_token_id
+    p_x0[..., pad_id] = 0.0
     
-    samples = _sample_categorical(probs)
+    # Renormalize (Quan trọng)
+    p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
+    # =================================================================
     
-    # ⚓ ANCHORING (Bước cuối cùng cũng phải ép)
-    if self.use_hdp_attention and self.hdp_block_sizes is not None:
-        q_len, p_len, e_len = self.hdp_block_sizes
-        plan_token_id = 50258
-        exec_token_id = 50259
-        
-        if samples.shape[1] > q_len:
-            samples[:, q_len] = plan_token_id
-        if samples.shape[1] > (q_len + p_len):
-            samples[:, q_len + p_len] = exec_token_id
-            
+    # 3. Sampling trực tiếp từ p_x0
+    samples = _sample_categorical(p_x0)
+    
+    # Note: Markers initialized at start, model learned to generate them
+    # No need to force at final step
+    
     return samples
 
   def _sample_t(
@@ -1615,9 +1594,28 @@ class Diffusion(L.LightningModule):
               
               # Set question tokens (they will be kept fixed)
               x[:, :q_len] = question_tokens
+              
+              # 🥇 CRITICAL: Initialize markers at block boundaries
+              # Model was trained with markers in data, so must start with them
+              plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
+              exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
+              
+              if q_len < seqlen:
+                  x[:, q_len] = plan_token_id  # First token of Plan = [PLAN]
+              if q_len + p_len < seqlen:
+                  x[:, q_len + p_len] = exec_token_id  # First token of Exec = [EXECUTION]
           else:
-              # No question provided - set BOS at start
+              # No question provided - set BOS at start + markers
               x[:, 0] = self.tokenizer.bos_token_id
+              
+              # Still need markers for structure
+              plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
+              exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
+              
+              if q_len < seqlen:
+                  x[:, q_len] = plan_token_id
+              if q_len + p_len < seqlen:
+                  x[:, q_len + p_len] = exec_token_id
       else:
           # Standard (non-HDP) sampling
           x[:, 0] = self.tokenizer.bos_token_id
