@@ -1160,18 +1160,9 @@ class Diffusion(L.LightningModule):
 
   def _analytic_update(self, x, t, dt, block_indices=None):
     """
-    Analytic update with SAFETY FILTER to prevent PAD/MASK generation.
+    Analytic update with SAFETY FILTER + ANCHORING.
     """
-    # Debug info (Giữ nguyên logic debug của bạn)
-    if not hasattr(self, '_analytic_update_debug'):
-      self._analytic_update_debug = True
-      print(f"\n🔍 [_analytic_update] Entry debug:")
-      print(f"   block_indices is None: {block_indices is None}")
-      if block_indices is not None:
-        print(f"   block_indices.shape: {block_indices.shape}")
-      print(f"   has hdp_block_sizes: {hasattr(self.config.model, 'hdp_block_sizes')}")
-
-    # 1. Tính toán xác suất Mask (Logic cũ giữ nguyên)
+    # 1. Tính toán xác suất Mask (Giữ nguyên)
     curr_sigma = self._sigma_from_p(self.noise(t)[1])
     next_sigma = self._sigma_from_p(self.noise(t - dt)[1])
     
@@ -1186,32 +1177,26 @@ class Diffusion(L.LightningModule):
         prob_stay_masked = prob_stay_masked.view(-1, 1, 1)
         prob_unmask = prob_unmask.view(-1, 1, 1)
         
-    # 2. Lấy dự đoán từ Model P(x0 | xt)
+    # 2. Lấy dự đoán từ Model
     p_x0 = self.get_score(x, curr_sigma, block_indices=block_indices)
     
     # =================================================================
-    # 🛡️ SAFETY FILTER: CẤM SINH RA [MASK] VÀ [PAD]
+    # 🛡️ SAFETY FILTER (Chống PAD/MASK)
     # =================================================================
-    # 2.1. Cấm Mask Token (Model không được đoán ra Mask)
-    p_x0[..., self.mask_index] = 0.0
+    p_x0[..., self.mask_index] = 0.0 # Cấm Mask
     
-    # 2.2. Cấm PAD Token (Model không được đoán ra PAD)
-    # Lấy ID của PAD token
-    pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
-    if pad_token_id is None:
-        pad_token_id = getattr(self.tokenizer, 'eos_token_id', None)
-        
-    if pad_token_id is not None:
-        p_x0[..., pad_token_id] = 0.0
+    # Cấm PAD (50257)
+    pad_token_id = 50257 # Hardcode theo log của bạn để chắc chắn
+    if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
+        pad_token_id = self.tokenizer.pad_token_id
+    p_x0[..., pad_token_id] = 0.0
 
-    # 2.3. Renormalize (Quan trọng: Chia lại tỷ lệ sao cho tổng = 1)
+    # Renormalize
     p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
     # =================================================================
     
-    # 3. Tính Posterior (Logic Absorbing)
+    # 3. Tính Posterior
     probs = p_x0 * prob_unmask
-    
-    # Gán xác suất giữ Mask vào đúng vị trí mask_index
     probs[..., self.mask_index] = prob_stay_masked.squeeze(-1)
     
     # 4. Sampling
@@ -1219,108 +1204,70 @@ class Diffusion(L.LightningModule):
     is_mask = (x == self.mask_index)
     x_out = torch.where(is_mask, x_new, x)
     
-    # 5. Marker Anchoring (Giữ nguyên logic của bạn)
-    if block_indices is not None and hasattr(self.config.model, 'hdp_block_sizes'):
-      q_len, p_len, e_len = self.config.model.hdp_block_sizes
-      plan_marker_pos = q_len
-      exec_marker_pos = q_len + p_len
-      seq_len = x_out.shape[1]
-      
-      plan_token_id = getattr(self.config.model, 'plan_token_id', None)
-      exec_token_id = getattr(self.config.model, 'execution_token_id', None)
-      
-      # (Debug print omitted for brevity but logic kept)
-      
-      marker_mask = torch.zeros_like(x_out, dtype=torch.bool)
-      marker_values = x_out.clone()
-      
-      if plan_token_id is not None and plan_marker_pos < seq_len:
-        marker_mask[:, plan_marker_pos] = True
-        marker_values[:, plan_marker_pos] = plan_token_id
-      if exec_token_id is not None and exec_marker_pos < seq_len:
-        marker_mask[:, exec_marker_pos] = True
-        marker_values[:, exec_marker_pos] = exec_token_id
-      
-      x_out = torch.where(marker_mask, marker_values, x_out)
-    
+    # =================================================================
+    # ⚓ ANCHORING (Mớm lời cho Model) - QUAN TRỌNG NHẤT
+    # =================================================================
+    if self.use_hdp_attention and self.hdp_block_sizes is not None:
+        q_len, p_len, e_len = self.hdp_block_sizes
+        
+        # Lấy ID của [PLAN] và [EXECUTION]
+        # Theo log của bạn: [PLAN]=50258, [EXECUTION]=50259
+        plan_token_id = 50258 
+        exec_token_id = 50259
+        
+        # Nếu model có config thì lấy, không thì dùng hardcode trên
+        if hasattr(self.config.model, 'plan_token_id'):
+            plan_token_id = self.config.model.plan_token_id
+        if hasattr(self.config.model, 'execution_token_id'):
+            exec_token_id = self.config.model.execution_token_id
+            
+        # ÉP BUỘC token đầu tiên của Plan và Execution phải đúng
+        # Chỉ ép nếu vị trí đó đang là Mask hoặc đã bị điền sai (không phải marker)
+        
+        # 1. Force [PLAN] at index 128 (q_len)
+        if x_out.shape[1] > q_len:
+            # Luôn luôn ép token này phải là [PLAN], bất kể t là bao nhiêu
+            # Điều này giúp model định hướng được context
+            x_out[:, q_len] = plan_token_id
+            
+        # 2. Force [EXECUTION] at index 256 (q_len + p_len)
+        if x_out.shape[1] > (q_len + p_len):
+            x_out[:, q_len + p_len] = exec_token_id
+            
     return x_out
 
 
   def _denoiser_update(self, x, t, block_indices=None):
-    """Final denoising step with SAFETY FILTER."""
+    """Final denoising step with SAFETY + ANCHORING."""
     sigma = self._sigma_from_p(self.noise(t)[1])
-    
-    # 1. Lấy score gốc
     score = self.get_score(x, sigma, block_indices=block_indices)
     
-    # =================================================================
-    # 🛡️ SAFETY FILTER CHO BƯỚC CUỐI
-    # =================================================================
-    # Cấm Mask
+    # Safety Filter
     score[..., self.mask_index] = 0.0
-    
-    # Cấm Pad
-    pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
-    if pad_token_id is None:
-        pad_token_id = getattr(self.tokenizer, 'eos_token_id', None)
-    if pad_token_id is not None:
-        score[..., pad_token_id] = 0.0
-        
-    # Renormalize score trước khi đi tiếp
+    pad_id = 50257
+    if hasattr(self.tokenizer, 'pad_token_id'): pad_id = self.tokenizer.pad_token_id
+    score[..., pad_id] = 0.0
     score = score / (score.sum(dim=-1, keepdim=True) + 1e-8)
-    # =================================================================
 
-    # 2. Tính toán tiếp theo logic cũ (nhưng với score đã sạch)
     stag_score = self._staggered_score(score, sigma)
     probs = stag_score * self._transp_transition(x, sigma)
-    
-    # Đảm bảo mask index = 0 lần nữa
     probs[..., self.mask_index] = 0
-    
-    # Normalize lần cuối để chắc chắn
     probs = probs / (probs.sum(dim=-1, keepdim=True) + 1e-8)
     
     samples = _sample_categorical(probs)
+    
+    # ⚓ ANCHORING (Bước cuối cùng cũng phải ép)
+    if self.use_hdp_attention and self.hdp_block_sizes is not None:
+        q_len, p_len, e_len = self.hdp_block_sizes
+        plan_token_id = 50258
+        exec_token_id = 50259
+        
+        if samples.shape[1] > q_len:
+            samples[:, q_len] = plan_token_id
+        if samples.shape[1] > (q_len + p_len):
+            samples[:, q_len + p_len] = exec_token_id
+            
     return samples
-
-
-  def _transp_transition(self, i, sigma):
-    sigma = _unsqueeze(sigma, reference=i[..., None])
-    
-    # Debug first call
-    if not hasattr(self, '_transp_debug_printed'):
-      self._transp_debug_printed = True
-      print(f"\n🔍 [_transp_transition] DEBUG:")
-      print(f"   i.shape: {i.shape}")
-      print(f"   i unique values: {torch.unique(i).tolist()}")
-      print(f"   self.vocab_size: {self.vocab_size}")
-      print(f"   self.mask_index: {self.mask_index}")
-      print(f"   First 10 i values: {i[0, :10].tolist()}")
-    
-    # Create transition matrix p(x_s=j | x_0=i, t)
-    # For regular tokens: self-loop with prob exp(-sigma), others 0
-    # For mask_index: uniform distribution over all tokens
-    
-    # Convert i to one-hot: [batch, seq, vocab_size]
-    # one_hot[b, pos, i[b,pos]] = 1.0, others = 0.0
-    edge = F.one_hot(i, num_classes=self.vocab_size).float()
-    
-    # Multiply by exp(-sigma) for self-loop probability
-    edge = edge * torch.exp(-sigma)
-    
-    # For mask positions, replace with uniform distribution
-    mask_positions = (i == self.mask_index)
-    if mask_positions.any():
-      # Uniform: (1 - exp(-sigma)) / (vocab_size - 1) for non-self transitions
-      # But for mask, we want uniform over ALL vocab
-      uniform_val = (1 - torch.exp(-sigma))  # Total prob mass for transitions
-      uniform_prob = uniform_val / (self.vocab_size - 1)
-      
-      # edge[mask_positions] has shape [num_masks, vocab_size]
-      # Fill with uniform probability
-      edge[mask_positions] = uniform_prob.squeeze(-1)  # Broadcast scalar
-    
-    return edge
 
   def _sample_t(
       self, batch_dims, device, sampling_eps_min, sampling_eps_max, block_size=None):
