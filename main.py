@@ -276,9 +276,14 @@ def _display_hdp_samples(samples, validation_data, tokenizer):
 
         if truth:
             print(f"\n🏷️  GROUND TRUTH:")
-            print(f"   [PLAN]: {truth['plan']}")
-            print(f"   [EXECUTION]: {truth['execution']}")
-            print(f"   [ANSWER]: {truth.get('answer', 'N/A')}")
+            # Check if HDP format (with plan/execution) or baseline format (just answer)
+            if 'plan' in truth and 'execution' in truth:
+                print(f"   [PLAN]: {truth['plan']}")
+                print(f"   [EXECUTION]: {truth['execution']}")
+                print(f"   [ANSWER]: {truth.get('answer', 'N/A')}")
+            else:
+                # Baseline format: just question + answer
+                print(f"   [ANSWER]: {truth.get('answer', 'N/A')}")
 
         print(f"\n📈 FORMAT ANALYSIS:")
         print(f"   [PLAN] marker found: {'✅' if has_plan_marker else '❌'}")
