@@ -1217,14 +1217,15 @@ class Diffusion(L.LightningModule):
       q_len, p_len, e_len = self.config.model.hdp_block_sizes
       plan_marker_pos = q_len
       exec_marker_pos = q_len + p_len
+      seq_len = x_out.shape[1]
       
       # Get marker token IDs
       plan_token_id = getattr(self.config.model, 'plan_token_id', None)
       exec_token_id = getattr(self.config.model, 'execution_token_id', None)
       
-      if plan_token_id is not None:
+      if plan_token_id is not None and plan_marker_pos < seq_len:
         x_out[:, plan_marker_pos] = plan_token_id
-      if exec_token_id is not None:
+      if exec_token_id is not None and exec_marker_pos < seq_len:
         x_out[:, exec_marker_pos] = exec_token_id
     
     return x_out
@@ -1391,10 +1392,13 @@ class Diffusion(L.LightningModule):
         q_len, p_len, e_len = self.config.model.hdp_block_sizes
         plan_marker_pos = q_len  # First token of Plan block
         exec_marker_pos = q_len + p_len  # First token of Exec block
+        seq_len = x0.shape[1]
         
-        # Force markers to stay unmasked
-        xt[:, plan_marker_pos] = x0[:, plan_marker_pos]
-        xt[:, exec_marker_pos] = x0[:, exec_marker_pos]
+        # Force markers to stay unmasked (with bounds check)
+        if plan_marker_pos < seq_len:
+          xt[:, plan_marker_pos] = x0[:, plan_marker_pos]
+        if exec_marker_pos < seq_len:
+          xt[:, exec_marker_pos] = x0[:, exec_marker_pos]
     
     x_input = xt
     if self.cross_attn:
