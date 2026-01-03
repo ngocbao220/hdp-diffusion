@@ -323,13 +323,32 @@ class DDiTBlock(nn.Module):
     scale = qkv.shape[-1]
     qkv = qkv.transpose(1, 3)
     
-    # Handle mask: Nếu mask là Tensor -> Boolean hoặc Float bias
-    # Nếu dùng SDPA, nó hỗ trợ cả boolean và additive mask
+    # Handle mask: Ensure mask is on same device and correct dtype/shape
     if mask is not None:
+        # Move mask to same device as qkv
+        if mask.device != qkv.device:
+            mask = mask.to(qkv.device)
+        
+        # Ensure mask has correct shape for SDPA
+        # SDPA expects: [B, num_heads, seq_len, seq_len] or broadcastable
+        # Our mask is typically [seq_len, seq_len], need to add batch & head dims
+        if mask.ndim == 2:
+            # [seq_len, seq_len] -> [1, 1, seq_len, seq_len]
+            mask = mask.unsqueeze(0).unsqueeze(0)
+        elif mask.ndim == 3:
+            # [B, seq_len, seq_len] -> [B, 1, seq_len, seq_len]
+            mask = mask.unsqueeze(1)
+        
+        # SDPA expects boolean mask or float additive bias
         if mask.dtype == torch.bool:
-             pass # SDPA nhận tốt
+            # Boolean mask: True means ALLOW attention
+            pass
         elif mask.dtype in [torch.float16, torch.float32, torch.bfloat16]:
-             pass # SDPA nhận tốt additive bias
+            # Float mask: additive bias (0 = allow, -inf = block)
+            pass
+        else:
+            # Convert to boolean if needed
+            mask = mask.bool()
     
     x = F.scaled_dot_product_attention(
       query=qkv[:, :, 0],
