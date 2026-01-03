@@ -1353,30 +1353,71 @@ class Diffusion(L.LightningModule):
         # Sample from posterior
         pred_tokens = _sample_categorical(probs)
     
-    # 4. Confidence-gated unmasking + Early step content blocking
-    # ✅ FIX #2: Only unmask if logit is high enough (not just argmax)
-    # ✅ FIX #3: At early steps (high noise), force everything to MASK
-    
-    # Check if we're in early steps (high noise = no content allowed)
-    SIGMA_CONTENT_START = 3.5  # Below this sigma, start allowing content
+    # =====================================================================
+    # 4. Confidence-gated unmasking + Early-step content blocking (FIXED)
+    # =====================================================================
+
+    # ---- Hyperparameters (SAFE DEFAULTS) ----
+    SIGMA_CONTENT_START = 3.5     # > this: no content at all
+    SIGMA_FULL_CONTENT  = 2.0     # < this: free unmasking
+    CONF_THRESHOLD_HIGH = 2.5     # strict (early-mid)
+    CONF_THRESHOLD_LOW  = 1.2     # relaxed (late)
+
     avg_sigma = curr_sigma.mean().item()
-    
+
+    # Default: keep everything masked
+    pred_tokens_out = torch.full_like(x, self.mask_index)
+    should_unmask = torch.zeros_like(x, dtype=torch.bool)
+
+    # ---------------------------------------------------------------------
+    # 🚫 EARLY STEPS: absolutely no content
+    # ---------------------------------------------------------------------
     if avg_sigma > SIGMA_CONTENT_START:
-        # Early steps: ONLY MASK allowed, no content yet
-        pred_tokens = torch.full_like(x, self.mask_index)
-        print(f"   🚫 Early step (sigma={avg_sigma:.2f} > {SIGMA_CONTENT_START}): Forcing all MASK")
+        if not hasattr(self, "_early_block_dbg"):
+            self._early_block_dbg = True
+            print(f"   🚫 Early step (sigma={avg_sigma:.2f}): forcing ALL MASK")
+
+    # ---------------------------------------------------------------------
+    # 🟡 MID / LATE STEPS: confidence-gated unmasking
+    # ---------------------------------------------------------------------
     else:
-        # Later steps: Allow content, but only if confident enough
-        # Confidence check: logit threshold (not probability!)
-        CONF_THRESHOLD = 5.0  # Higher = more conservative (try 4.0-6.0)
-        top_logits, _ = model_output.max(dim=-1)  # (batch, seq)
-        can_unmask = top_logits > CONF_THRESHOLD
-        
-        if not hasattr(self, '_conf_debug'):
-            self._conf_debug = True
+        # ---- sigma-based threshold scheduling ----
+        if avg_sigma > SIGMA_FULL_CONTENT:
+            # Linear interpolate threshold
+            alpha = (avg_sigma - SIGMA_FULL_CONTENT) / (SIGMA_CONTENT_START - SIGMA_FULL_CONTENT)
+            conf_threshold = (
+                alpha * CONF_THRESHOLD_HIGH
+                + (1.0 - alpha) * CONF_THRESHOLD_LOW
+            )
+        else:
+            # Late steps: be permissive
+            conf_threshold = CONF_THRESHOLD_LOW
+
+        # ---- compute confidence (LOGIT, not prob) ----
+        top_logits, _ = model_output.max(dim=-1)   # (B, L)
+        can_unmask = top_logits > conf_threshold
+
+        # ---- block-aware gating (HDP) ----
+        if self.use_hdp_attention and self.hdp_block_sizes is not None:
+            q_len, p_len, e_len = self.hdp_block_sizes
+
+            # Question block: NEVER mask (already clean)
+            can_unmask[:, :q_len] = False
+
+            # Plan block: slightly conservative
+            can_unmask[:, q_len : q_len + p_len] &= (top_logits[:, q_len : q_len + p_len] > conf_threshold)
+
+            # Execution / Answer: allow freer unmasking
+            can_unmask[:, q_len + p_len :] |= (top_logits[:, q_len + p_len :] > conf_threshold * 0.8)
+
+        should_unmask = can_unmask
+
+        if not hasattr(self, "_conf_dbg"):
+            self._conf_dbg = True
             print(f"   ✅ Content allowed (sigma={avg_sigma:.2f})")
-            print(f"   Confidence threshold: {CONF_THRESHOLD}")
-            print(f"   Tokens passing threshold: {can_unmask.sum().item()}/{can_unmask.numel()}")
+            print(f"   Confidence threshold: {conf_threshold:.2f}")
+            print(f"   Tokens passing threshold: {should_unmask.sum().item()}/{should_unmask.numel()}")
+
     
     # Combine: (1) random prob_unmask AND (2) confidence check
     should_unmask = (torch.rand(x.shape, device=x.device) < prob_unmask.squeeze(-1).squeeze(-1))
