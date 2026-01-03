@@ -1180,24 +1180,22 @@ class Diffusion(L.LightningModule):
     # 2. Lấy dự đoán từ Model
     p_x0 = self.get_score(x, curr_sigma, block_indices=block_indices)
     
-    # =================================================================
-    # 🛡️ SAFETY FILTER (Chống PAD/MASK)
-    # =================================================================
-    p_x0[..., self.mask_index] = 0.0 # Cấm Mask
-    
-    # Cấm PAD (50257)
-    pad_token_id = 50257 # Hardcode theo log của bạn để chắc chắn
-    if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
-        pad_token_id = self.tokenizer.pad_token_id
-    p_x0[..., pad_token_id] = 0.0
-
-    # Renormalize
-    p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
-    # =================================================================
-    
-    # 3. Tính Posterior
+    # 3. Tính Posterior (TRƯỚC KHI filter)
     probs = p_x0 * prob_unmask
     probs[..., self.mask_index] = prob_stay_masked.squeeze(-1)
+    
+    # =================================================================
+    # 🛡️ SAFETY FILTER (Sau khi tính posterior, cấm các token độc hại)
+    # =================================================================
+    # Cấm PAD token (không được generate PAD)
+    pad_token_id = 50257
+    if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
+        pad_token_id = self.tokenizer.pad_token_id
+    probs[..., pad_token_id] = 0.0
+
+    # Renormalize sau khi filter
+    probs = probs / (probs.sum(dim=-1, keepdim=True) + 1e-8)
+    # =================================================================
     
     # 4. Sampling
     x_new = _sample_categorical(probs)
