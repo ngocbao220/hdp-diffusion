@@ -18,6 +18,25 @@ echo "BD3-LM BASELINE Overfitting Test"
 echo "Simple Question + Answer Format"
 echo "=========================================="
 
+# ============================================
+# EXPERIMENT CONFIGURATION (Chỉnh ở đây!)
+# ============================================
+
+# Experiment Mode
+EXP_NAME="bd_baseline_overfit"   # Tên experiment
+DATA_CONFIG="gsm8k_baseline"     # Data config: gsm8k_baseline
+MODE="train"                     # train, sample, evaluate
+
+# Model Architecture
+MODEL_SIZE="tiny"                # tiny, small, base, large
+ATTN_BACKEND="sdpa"              # sdpa, flash_attn, flex
+
+# Diffusion Algorithm
+ALGO="bd3lm"                     # bd3lm, ar, ddpm
+SAMPLER="semi_ar"                # ddpm (analytic), semi_ar (block-wise)
+BACKBONE="dit"                   # dit, transformer
+NOISE_SCHEDULE="loglinear"       # loglinear, linear, cosine
+
 # Baseline BD3-LM settings (no hierarchical structure)
 SEQ_LEN=512  # Full sequence length
 
@@ -30,14 +49,21 @@ EVAL_BATCH_SIZE=1
 GLOBAL_BATCH_SIZE=1  
 GRAD_ACCUM=1         
 
-# Training hyperparameters (OVERFITTING TEST)
-MAX_STEPS=500        # 500 steps should memorize 1 sample
-WARMUP_STEPS=10      # Short warmup
-VAL_EVERY_N_EPOCH=10  # Validate every 10 epochs
-LOG_INTERVAL=10      # Log frequently
+# Training Hyperparameters
+MAX_STEPS=500                    # Total training steps
+WARMUP_STEPS=10                  # Warmup steps
+VAL_EVERY_N_EPOCH=10             # Validate every N epochs
+LOG_INTERVAL=10                  # Log every N steps
+LR=3e-4                          # Learning rate (baseline can handle higher LR)
+EMA=0.9999                       # EMA decay rate
+RESAMPLE=True                    # Resample during training
+GRAD_CLIP=1.0                    # Gradient clipping value
 
-# Learning rate
-LR=3e-4  # Higher LR to memorize faster
+# Hardware Settings
+DEVICES=1                        # Number of GPUs
+NUM_NODES=1                      # Number of nodes
+PRECISION="bf16-mixed"           # bf16-mixed, fp16, fp32
+STRATEGY="ddp"                   # ddp, deepspeed, fsdp
 
 # Optional: Start from pretrained checkpoint
 PRETRAIN_CKPT=null
@@ -64,25 +90,26 @@ echo "=========================================="
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate hdp
 
-# Run BD3-LM BASELINE training (no HDP attention)
+# Run BD3-LM BASELINE training with configurable parameters
 python -u main.py \
-    mode=train \
-    model=tiny \
-    data=gsm8k_baseline \
+    mode=${MODE} \
+    model=${MODEL_SIZE} \
+    data=${DATA_CONFIG} \
     model.length=${SEQ_LEN} \
-    model.attn_backend=sdpa \
-    algo=bd3lm \
-    algo.backbone=dit \
+    model.attn_backend=${ATTN_BACKEND} \
+    algo=${ALGO} \
+    algo.sampler=${SAMPLER} \
+    algo.backbone=${BACKBONE} \
     block_size=${BLOCK_SIZE} \
-    noise=loglinear \
+    noise=${NOISE_SCHEDULE} \
     loader.global_batch_size=${GLOBAL_BATCH_SIZE} \
     loader.eval_global_batch_size=256 \
     loader.batch_size=${BATCH_SIZE} \
     loader.eval_batch_size=${EVAL_BATCH_SIZE} \
     loader.num_workers=16 \
     optim.lr=${LR} \
-    training.ema=0.9999 \
-    training.resample=True \
+    training.ema=${EMA} \
+    training.resample=${RESAMPLE} \
     training.from_pretrained=$PRETRAIN_CKPT \
     lr_scheduler.num_warmup_steps=${WARMUP_STEPS} \
     trainer.max_steps=${MAX_STEPS} \
@@ -90,15 +117,15 @@ python -u main.py \
     trainer.val_check_interval=null \
     +trainer.check_val_every_n_epoch=${VAL_EVERY_N_EPOCH} \
     trainer.log_every_n_steps=${LOG_INTERVAL} \
-    trainer.devices=1 \
-    trainer.num_nodes=1 \
-    +trainer.strategy=ddp \
-    trainer.precision=bf16-mixed \
-    trainer.gradient_clip_val=1.0 \
-    wandb.name=bd-baseline-overfit-$(date +%Y%m%d-%H%M%S) \
-    wandb.project=bd3lm-baseline-test \
-    wandb.tags=[baseline,gsm8k,overfit,h200] \
-    +experiment_name=bd_baseline_overfit_test \
+    trainer.devices=${DEVICES} \
+    trainer.num_nodes=${NUM_NODES} \
+    +trainer.strategy=${STRATEGY} \
+    trainer.precision=${PRECISION} \
+    trainer.gradient_clip_val=${GRAD_CLIP} \
+    wandb.name=${EXP_NAME}-${SAMPLER}-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S) \
+    wandb.project=bd3lm-baseline-experiments \
+    wandb.tags=[baseline,gsm8k,${SAMPLER},bs${BLOCK_SIZE}] \
+    +experiment_name=${EXP_NAME} \
     checkpointing.save_dir=${OUTPUT_DIR}
 
 EXIT_CODE=$?

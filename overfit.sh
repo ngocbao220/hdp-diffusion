@@ -18,6 +18,30 @@ echo "HDP-Diffusion Training (Single GPU)"
 echo "Hierarchical Dual-Process Diffusion"
 echo "=========================================="
 
+# ============================================
+# EXPERIMENT CONFIGURATION (Chỉnh ở đây!)
+# ============================================
+
+# Experiment Mode
+EXP_NAME="hdp_overfit"           # Tên experiment
+DATA_CONFIG="hdp_overfit"        # Data config: hdp_overfit, hdp_base
+MODE="train"                     # train, sample, evaluate
+
+# Model Architecture
+MODEL_SIZE="tiny"                # tiny, small, base, large
+ATTN_BACKEND="sdpa"              # sdpa, flash_attn, flex
+
+# HDP Settings
+USE_HDP_ATTENTION=true           # true = HDP hierarchical attention, false = standard
+USE_SPECIAL_FORMAT=true          # true = [PLAN]/[EXECUTION] markers
+CAUSAL_WITHIN_BLOCK=true         # true = causal mask trong từng block
+
+# Diffusion Algorithm
+ALGO="bd3lm"                     # bd3lm, ar, ddpm
+SAMPLER="ddpm"                   # ddpm (analytic), semi_ar (block-wise)
+BACKBONE="dit"                   # dit, transformer
+NOISE_SCHEDULE="loglinear"       # loglinear, linear, cosine
+
 # HDP-Diffusion specific settings
 QUESTION_LEN=128
 PLAN_LEN=128
@@ -33,14 +57,21 @@ EVAL_BATCH_SIZE=1
 GLOBAL_BATCH_SIZE=1  # No gradient accumulation needed
 GRAD_ACCUM=1         
 
-# Training hyperparameters (OVERFITTING TEST)
-MAX_STEPS=500        # 500 steps should be enough to memorize 1 sample
-WARMUP_STEPS=10      # Short warmup
-VAL_EVERY_N_EPOCH=10  # Validate every 10 epochs (with 1 sample = every step)
-LOG_INTERVAL=10      # Log frequently to monitor overfitting
+# Training Hyperparameters
+MAX_STEPS=500                    # Total training steps
+WARMUP_STEPS=10                  # Warmup steps
+VAL_EVERY_N_EPOCH=10             # Validate every N epochs
+LOG_INTERVAL=10                  # Log every N steps
+LR=1e-4                          # Learning rate (1e-4 stable, 3e-4 faster)
+EMA=0.9999                       # EMA decay rate
+RESAMPLE=True                    # Resample during training
+GRAD_CLIP=1.0                    # Gradient clipping value
 
-# Learning rate (LOWER to prevent collapse!)
-LR=1e-4  # Reduced from 3e-4 - model was collapsing to token 0
+# Hardware Settings
+DEVICES=1                        # Number of GPUs
+NUM_NODES=1                      # Number of nodes
+PRECISION="bf16-mixed"           # bf16-mixed, fp16, fp32
+STRATEGY="ddp"                   # ddp, deepspeed, fsdp
 
 # Optional: Start from pretrained checkpoint
 PRETRAIN_CKPT=null
@@ -70,29 +101,32 @@ echo "=========================================="
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate hdp
 
-# Run HDP-Diffusion training with H200 optimizations
+# Run HDP-Diffusion training with configurable parameters
 python -u main.py \
-    mode=train \
-    model=tiny \
-    data=hdp_overfit \
+    mode=${MODE} \
+    model=${MODEL_SIZE} \
+    data=${DATA_CONFIG} \
     model.length=${SEQ_LEN} \
-    model.attn_backend=sdpa \
-    algo=bd3lm \
-    algo.backbone=dit \
+    model.attn_backend=${ATTN_BACKEND} \
+    algo=${ALGO} \
+    algo.sampler=${SAMPLER} \
+    algo.backbone=${BACKBONE} \
     block_size=${BLOCK_SIZE} \
-    noise=loglinear \
+    noise=${NOISE_SCHEDULE} \
     loader.global_batch_size=${GLOBAL_BATCH_SIZE} \
     loader.eval_global_batch_size=256 \
     loader.batch_size=${BATCH_SIZE} \
     loader.eval_batch_size=${EVAL_BATCH_SIZE} \
     loader.num_workers=16 \
-    data.hdp.use_hdp_attention=true \
+    data.hdp.use_hdp_attention=${USE_HDP_ATTENTION} \
+    data.hdp.use_special_format=${USE_SPECIAL_FORMAT} \
+    data.hdp.causal_within_block=${CAUSAL_WITHIN_BLOCK} \
     data.hdp.question_len=${QUESTION_LEN} \
     data.hdp.plan_len=${PLAN_LEN} \
     data.hdp.exec_len=${EXEC_LEN} \
     optim.lr=${LR} \
-    training.ema=0.9999 \
-    training.resample=True \
+    training.ema=${EMA} \
+    training.resample=${RESAMPLE} \
     training.from_pretrained=$PRETRAIN_CKPT \
     lr_scheduler.num_warmup_steps=${WARMUP_STEPS} \
     trainer.max_steps=${MAX_STEPS} \
@@ -100,15 +134,15 @@ python -u main.py \
     trainer.val_check_interval=null \
     +trainer.check_val_every_n_epoch=${VAL_EVERY_N_EPOCH} \
     trainer.log_every_n_steps=${LOG_INTERVAL} \
-    trainer.devices=1 \
-    trainer.num_nodes=1 \
-    +trainer.strategy=ddp \
-    trainer.precision=bf16-mixed \
-    trainer.gradient_clip_val=1.0 \
-    wandb.name=hdp-diffusion-h200-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S) \
-    wandb.project=hdp-diffusion-h200 \
-    wandb.tags=[hdp,gsm8k,hierarchical,h200,bs${BLOCK_SIZE}] \
-    +experiment_name=hdp_diffusion_h200_bs${BLOCK_SIZE} \
+    trainer.devices=${DEVICES} \
+    trainer.num_nodes=${NUM_NODES} \
+    +trainer.strategy=${STRATEGY} \
+    trainer.precision=${PRECISION} \
+    trainer.gradient_clip_val=${GRAD_CLIP} \
+    wandb.name=${EXP_NAME}-${SAMPLER}-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S) \
+    wandb.project=hdp-diffusion-experiments \
+    wandb.tags=[hdp,gsm8k,${SAMPLER},bs${BLOCK_SIZE}] \
+    +experiment_name=${EXP_NAME} \
     checkpointing.save_dir=${OUTPUT_DIR}
 
 EXIT_CODE=$?
@@ -119,24 +153,6 @@ echo "Training completed with exit code: ${EXIT_CODE}"
 if [ ${EXIT_CODE} -eq 0 ]; then
     echo "✅ Overfitting test completed!"
     echo "Checkpoints saved to: ${OUTPUT_DIR}"
-    echo ""
-    echo "Next Steps:"
-    echo "1. Check loss curve - should drop to near 0"
-    echo "2. Run inference to verify memorization:"
-    echo ""
-    echo "bash scripts/inference/hdp.sh"
-    echo ""
-    echo "Or manually:"
-    echo "python main.py mode=sample_eval \\"
-    echo "    eval.checkpoint_path=${OUTPUT_DIR}/checkpoints/last.ckpt \\"
-    echo "    model=tiny \\"
-    echo "    model.length=512 \\"
-    echo "    algo=bd3lm \\"
-    echo "    algo.sampler=ddpm \\"
-    echo "    data=hdp_overfit \\"
-    echo "    data.hdp.use_hdp_attention=true \\"
-    echo "    sampling.num_steps=100 \\"
-    echo "    loader.eval_batch_size=1"
 else
     echo "❌ Training failed!"
     echo "Check logs: watch_folder/"
