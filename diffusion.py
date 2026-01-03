@@ -1350,12 +1350,8 @@ class Diffusion(L.LightningModule):
       if avg_sigma > SIGMA_CONTENT_START:
           should_unmask = torch.zeros_like(x, dtype=torch.bool)
       else:
-          # Anneal unmask probability by sigma
-          anneal = torch.clamp(
-              1.0 - avg_sigma / SIGMA_CONTENT_START,
-              min=0.05,
-              max=1.0
-          )
+          # Anneal unmask probability by sigma (scalar computation)
+          anneal = max(0.05, min(1.0, 1.0 - avg_sigma / SIGMA_CONTENT_START))
 
           rand_unmask = torch.rand_like(x.float()) < (prob_unmask * anneal)
           should_unmask = rand_unmask & can_unmask
