@@ -692,12 +692,37 @@ class Diffusion(L.LightningModule):
         
         print(f"Token-level accuracy: {accuracy*100:.2f}% (on {num_content_tokens} content tokens, excluding PAD)")
         
-        # Decode to text
+        # Decode to text with PAD placeholders
         if hasattr(self, 'tokenizer'):
-          gt_text = self.tokenizer.decode(gt_tokens[non_pad_mask][0, :200])
-          pred_text = self.tokenizer.decode(pred_tokens[non_pad_mask][0, :200])
-          print(f"\nGround Truth Text: {gt_text}")
-          print(f"Prediction Text  : {pred_text}") 
+          # Helper function to decode with PAD indicators
+          def decode_with_pad_markers(tokens_1d, mask_1d, tokenizer):
+            """Decode tokens showing (X pad tokens) for PAD regions"""
+            result_parts = []
+            i = 0
+            while i < len(tokens_1d):
+              if mask_1d[i]:  # Content token
+                # Find consecutive content tokens
+                j = i
+                while j < len(tokens_1d) and mask_1d[j]:
+                  j += 1
+                # Decode this content segment
+                content_text = tokenizer.decode(tokens_1d[i:j])
+                result_parts.append(content_text)
+                i = j
+              else:  # PAD token
+                # Count consecutive PAD tokens
+                j = i
+                while j < len(tokens_1d) and not mask_1d[j]:
+                  j += 1
+                pad_count = j - i
+                result_parts.append(f"({pad_count} pad tokens)")
+                i = j
+            return ''.join(result_parts)
+          
+          gt_text = decode_with_pad_markers(gt_tokens[0], non_pad_mask[0], self.tokenizer)
+          pred_text = decode_with_pad_markers(pred_tokens[0], non_pad_mask[0], self.tokenizer)
+          print(f"\nGround Truth Text (full): {gt_text}")
+          print(f"Prediction Text (full)  : {pred_text}") 
         
         # Check by block if HDP (also exclude PAD)
         if block_indices is not None:
