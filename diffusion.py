@@ -1396,24 +1396,8 @@ class Diffusion(L.LightningModule):
         question_mask = (block_indices == 0)
       xt = torch.where(question_mask, x0, xt)
       
-      # 🥇 HARD POSITION ANCHOR: Never mask marker tokens at block boundaries
-      # Markers should always be visible to teach model the structure
-      # Use torch.where instead of in-place assignment to avoid autograd issues
-      if hasattr(self.config.model, 'hdp_block_sizes'):
-        q_len, p_len, e_len = self.config.model.hdp_block_sizes
-        plan_marker_pos = q_len  # First token of Plan block
-        exec_marker_pos = q_len + p_len  # First token of Exec block
-        seq_len = x0.shape[1]
-        
-        # Create mask for marker positions
-        marker_mask = torch.zeros_like(xt, dtype=torch.bool)
-        if plan_marker_pos < seq_len:
-          marker_mask[:, plan_marker_pos] = True
-        if exec_marker_pos < seq_len:
-          marker_mask[:, exec_marker_pos] = True
-        
-        # Force markers to stay unmasked (non-in-place)
-        xt = torch.where(marker_mask, x0, xt)
+      # Note: We do NOT force markers during training - let model learn to generate them
+      # Markers will be enforced during inference only
     
     x_input = xt
     if self.cross_attn:
