@@ -1531,13 +1531,13 @@ class Diffusion(L.LightningModule):
       question_tokens=None
   ): 
       """
-      Analytic sampler: FINAL FIXED ALIGNMENT (No Double BOS).
-      Target structure: [BOS] [Question Tokens...] [PADs...] [PLAN] ...
+      Analytic sampler: DIRECT ALIGNMENT (NO BOS).
+      Matches Training Data: Index 0 = First word of Question ("Janet").
       """
       # 1. Khởi tạo nhiễu
       x = self._sample_prior(n_samples, seqlen).to(self.device)
       
-      print(f"🔍 [_analytic_sampler] Starting sampling (FINAL ALIGNMENT FIX)")
+      print(f"🔍 [_analytic_sampler] Starting sampling (DIRECT ALIGNMENT - NO BOS)")
 
       # 2. HDP Config Check (Giữ nguyên)
       if self.use_hdp_attention:
@@ -1551,6 +1551,7 @@ class Diffusion(L.LightningModule):
           else:
               self.use_hdp_attention = False
         
+        # Scaling logic
         if self.use_hdp_attention and self.hdp_block_sizes is not None:
           expected_len = sum(self.hdp_block_sizes)
           if expected_len != seqlen:
@@ -1565,9 +1566,10 @@ class Diffusion(L.LightningModule):
       block_indices = None
       q_len, p_len, e_len = 0, 0, 0
       
-      # Lấy ID của BOS/PAD
-      bos_token = self.tokenizer.bos_token_id if self.tokenizer.bos_token_id is not None else 50256
+      # Lấy PAD token
       pad_token = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 50257
+      # Kiểm tra nếu tokenizer tự thêm BOS thì lấy ID để lọc bỏ
+      bos_token = self.tokenizer.bos_token_id 
       
       if self.use_hdp_attention and self.hdp_block_sizes is not None:
           q_len, p_len, e_len = self.hdp_block_sizes
@@ -1578,41 +1580,32 @@ class Diffusion(L.LightningModule):
           b_e = torch.full((e_len,), 2, dtype=torch.long, device=self.device)
           block_indices = torch.cat([b_q, b_p, b_e]).unsqueeze(0).repeat(n_samples, 1)
           
-          # 3.2 Điền Question vào đúng vị trí
-          # Bước A: Đặt BOS vào vị trí 0
-          x[:, 0] = bos_token 
-          
+          # 3.2 Điền Question vào (NO BOS shift)
           if question_tokens is not None: 
               if question_tokens.shape[0] == 1 and n_samples > 1:
                   question_tokens = question_tokens.repeat(n_samples, 1)
               
-              # Bước B: Kiểm tra xem input có lỡ dính BOS ở đầu không. Nếu có thì cắt bỏ.
-              # (Để tránh Double BOS: [BOS][BOS][Janet]...)
-              if question_tokens[0, 0] == bos_token:
+              # Nếu input token có BOS ở đầu, CẮT BỎ nó đi để khớp với Training Data
+              if bos_token is not None and question_tokens[0, 0] == bos_token:
                   q_content = question_tokens[:, 1:]
               else:
                   q_content = question_tokens
 
-              # Bước C: Tính toán độ dài khả dụng (Trừ 1 slot cho BOS ở index 0)
-              available_len = q_len - 1 
               curr_q_len = q_content.shape[1]
               
-              # Bước D: Cắt hoặc Pad Question text
-              if curr_q_len > available_len:
-                  # Cắt bớt nếu dài quá
-                  q_final = q_content[:, :available_len]
+              # Cắt hoặc Pad
+              if curr_q_len > q_len:
+                  q_final = q_content[:, :q_len]
               else:
-                  # Pad nếu ngắn hơn (pad bên phải)
-                  pad_amt = available_len - curr_q_len
+                  pad_amt = q_len - curr_q_len
                   q_final = F.pad(q_content, (0, pad_amt), value=pad_token)
               
-              # Bước E: Điền vào x bắt đầu từ Index 1
-              # x[0] là BOS, x[1] là từ đầu tiên (Janet)
-              x[:, 1:q_len] = q_final
+              # ✅ CORRECT ALIGNMENT: Gán thẳng từ Index 0
+              x[:, :q_len] = q_final
               
           else:
-              # Nếu không có question, điền PAD vào phần còn lại
-              x[:, 1:q_len] = pad_token
+              # Nếu không có question, điền PAD toàn bộ
+              x[:, :q_len] = pad_token
 
           # 3.3 Anchoring Markers
           plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
@@ -1624,7 +1617,8 @@ class Diffusion(L.LightningModule):
               x[:, q_len + p_len] = exec_token_id
 
       else:
-          x[:, 0] = bos_token
+          # Fallback non-HDP
+          x[:, 0] = self.tokenizer.bos_token_id if self.tokenizer.bos_token_id is not None else 50256
       
       timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
       dt = (1 - eps) / num_steps
@@ -1633,24 +1627,21 @@ class Diffusion(L.LightningModule):
       for i in tqdm(range(num_steps), desc='HDP Sampling'):
           t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
 
-          # Gọi update (có Safety Filter)
           x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
           
-          # Re-enforce (Chỉ giữ lại những gì ta chắc chắn đúng)
+          # Re-enforce (Giữ nguyên cấu trúc KHÔNG BOS)
           if self.use_hdp_attention and question_tokens is not None:
-              x[:, 0] = bos_token           # Giữ BOS
-              x[:, 1:q_len] = q_final       # Giữ Question Text
-              x[:, q_len] = plan_token_id   # Giữ [PLAN]
-              x[:, q_len + p_len] = exec_token_id # Giữ [EXECUTION]
+              x[:, :q_len] = q_final       # Question từ 0
+              x[:, q_len] = plan_token_id  # Plan từ 128
+              x[:, q_len + p_len] = exec_token_id # Exec từ 256
       
       # 5. Final
       t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
       x = self._denoiser_update(x=x, t=t, block_indices=block_indices)
       
-      # Final clean-up for return
+      # Final clean-up
       if self.use_hdp_attention and question_tokens is not None:
-          x[:, 0] = bos_token
-          x[:, 1:q_len] = q_final
+          x[:, :q_len] = q_final
       
       stop, x = self._check_stop_conds(x)
       if stop:
