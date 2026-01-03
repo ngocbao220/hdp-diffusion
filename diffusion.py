@@ -1387,6 +1387,9 @@ class Diffusion(L.LightningModule):
         # Prevent unmasking at marker positions
         should_unmask = should_unmask & (~marker_positions)
     
+    # Identify which positions are currently masked
+    is_mask = (x == self.mask_index)
+    
     x_out = torch.where(is_mask & should_unmask, pred_tokens, x)
     
     # =================================================================
