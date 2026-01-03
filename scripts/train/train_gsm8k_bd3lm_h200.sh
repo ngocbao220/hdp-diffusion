@@ -23,14 +23,14 @@ BLOCK_SIZE=16  # Standard block size for BD3-LM (can try 4, 8, 16)
 SEQ_LENGTH=512 # Context length for GSM8K problems
 
 # H200 Settings (optimized for dual training)
-BATCH_SIZE=48          # Increased to use more VRAM
-EVAL_BATCH_SIZE=24     # Increased proportionally
-GLOBAL_BATCH_SIZE=288  # 48 * 1 GPU * 6 = 288
-GRAD_ACCUM=6           # Balanced for speed and memory
+BATCH_SIZE=16          # Reduced for dual training (2 models on 1 GPU)
+EVAL_BATCH_SIZE=8      # Reduced proportionally
+GLOBAL_BATCH_SIZE=256  # 16 * 1 GPU * 16 = 256
+GRAD_ACCUM=16          # Increased to compensate for smaller batch
 
 MAX_STEPS=10000       # Reduced from 50000 for 5-hour training
 WARMUP_STEPS=1000     # Reduced proportionally
-VAL_EVERY_N_EPOCH=200      # Validate every 200 epochs (less frequent)
+VAL_EVERY_N_EPOCH=10      # Validate every 10 epochs (less frequent)
 LOG_INTERVAL=50          # More frequent logging
 
 # Learning rate (increased for larger batch)
@@ -52,11 +52,17 @@ echo "  Learning Rate: ${LR}"
 echo "  Sequence Length: ${SEQ_LENGTH}"
 echo "  Block Size: ${BLOCK_SIZE}"
 echo "  Max Steps: ${MAX_STEPS}"
-echo "  Memory: ~55-60GB VRAM (optimized)"
+echo "  Memory: ~50-60GB VRAM (dual training optimized)"
 echo "  Output: ${OUTPUT_DIR}"
 echo "=========================================="
 
-
+# Check and download GSM8K dataset if not exists
+if [ ! -f "data/gsm8k/gsm8k_baseline_train.json" ]; then
+    echo ""
+    echo "📥 GSM8K dataset not found locally. Downloading from Hugging Face..."
+    python scripts/data_prep/download_gsm8k.py
+    echo ""
+fi
 
 # Run training with H200 optimizations
 python -u main.py \
