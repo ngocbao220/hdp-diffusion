@@ -1297,15 +1297,25 @@ class Diffusion(L.LightningModule):
     
     model_output = self.forward(x_input, curr_sigma, sample_mode=True, block_indices=block_indices)
     
-    # ✅ FIX #1: HARD BAN MARKER TOKENS FROM PREDICTION
-    # Markers are STRUCTURAL - must be injected by logic, NOT predicted by model!
+    # ✅ FIX #1: HARD BAN STRUCTURAL/SPECIAL TOKENS FROM PREDICTION
+    # These tokens are injected by logic, NOT predicted by model!
     plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
     exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
     answer_token_id = getattr(self.config.model, 'answer_token_id', 50260)
+    pad_token_id = getattr(self.tokenizer, 'pad_token_id', 50257)
+    bos_token_id = getattr(self.tokenizer, 'bos_token_id', None)
+    eos_token_id = getattr(self.tokenizer, 'eos_token_id', None)
     
+    # Ban marker tokens
     model_output[..., plan_token_id] = self.neg_infinity
     model_output[..., exec_token_id] = self.neg_infinity
     model_output[..., answer_token_id] = self.neg_infinity
+    # Ban special tokens (prevent garbage)
+    model_output[..., pad_token_id] = self.neg_infinity
+    if bos_token_id is not None:
+        model_output[..., bos_token_id] = self.neg_infinity
+    if eos_token_id is not None:
+        model_output[..., eos_token_id] = self.neg_infinity
     
     # 3. Adaptive decoding: Greedy vs Sampling
     use_greedy = getattr(self.config.sampling, 'use_greedy_decoding', True)  # Default: greedy
@@ -1343,9 +1353,27 @@ class Diffusion(L.LightningModule):
         # Sample from posterior
         pred_tokens = _sample_categorical(probs)
     
-    # 4. Apply unmasking based on probability threshold
-    should_unmask = (torch.rand_like(prob_unmask.float()) < prob_unmask.float())
-    is_mask = (x == self.mask_index)
+    # 4. Confidence-based unmasking (progressive refinement)
+    # Only unmask tokens when model is confident enough
+    # This enables gradual refinement instead of immediate greedy decoding
+    
+    if use_greedy:
+        # Get model confidence (max probability)
+        probs = model_output.exp()
+        max_probs, _ = probs.max(dim=-1)  # (batch, seq)
+        
+        # Define confidence threshold (higher = more conservative)
+        # Early steps: low threshold (unmask more), Late steps: high threshold (only unmask very confident)
+        # This creates progressive refinement
+        confidence_threshold = 0.5 + 0.3 * (curr_sigma.mean().item() / 10.0)  # 0.5 to 0.8 based on sigma
+        is_confident = max_probs > confidence_threshold
+    else:
+        # For sampling mode, always allow unmasking based on prob_unmask
+        is_confident = torch.ones_like(x, dtype=torch.bool)
+    
+    # Combine: only unmask if (1) random threshold AND (2) model confident
+    should_unmask = (torch.rand(x.shape, device=x.device) < prob_unmask.squeeze(-1).squeeze(-1))
+    should_unmask = should_unmask & is_confident
     
     # ✅ FIX #2: FREEZE MARKER POSITIONS - NEVER UNMASK THEM!
     # Markers must remain fixed at block boundaries
@@ -1357,9 +1385,9 @@ class Diffusion(L.LightningModule):
         if x.shape[1] > (q_len + p_len):
             marker_positions[:, q_len + p_len] = True  # <|execution|>
         # Prevent unmasking at marker positions
-        should_unmask = should_unmask & (~marker_positions.unsqueeze(-1))
+        should_unmask = should_unmask & (~marker_positions)
     
-    x_out = torch.where(is_mask & should_unmask.squeeze(-1), pred_tokens, x)
+    x_out = torch.where(is_mask & should_unmask, pred_tokens, x)
     
     # =================================================================
     # 🥇 CRITICAL: HDP Structure Enforcement
