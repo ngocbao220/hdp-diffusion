@@ -1763,8 +1763,10 @@ class Diffusion(L.LightningModule):
       timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
       dt = (1 - eps) / num_steps
       
-      # Track x0_pred for cross_attn (match training [xt, x0])
-      x0_pred = None
+      # ✅ CRITICAL FIX: Initialize x0_pred with current x (Question clean, Plan/Exec masked)
+      # This matches training distribution: [xt_partially_masked, x0_with_clean_question]
+      # Without this, first step sees [x, x] (both masked) instead of [x, x_with_clean_question]
+      x0_pred = x.clone() if self.cross_attn else None
       
       # 🔍 DEBUG: Check Question block content before sampling
       print(f"\n🔍 [_analytic_sampler] Question block content:")
