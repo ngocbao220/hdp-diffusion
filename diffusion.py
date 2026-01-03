@@ -554,14 +554,30 @@ class Diffusion(L.LightningModule):
         print(f"🔍 [training_step] MODEL LEARNING CHECK at step {self.global_step}")
         print("="*80)
         
-        # Get model prediction at very low noise (near-deterministic)
-        sigma_low = torch.full((batch['input_ids'].shape[0], 1), 0.001, device=self.device)
-        # IMPORTANT: Set sample_mode=True to use single sequence (512 tokens), not concatenated (1024)
-        model_output = self.forward(batch['input_ids'], sigma=sigma_low, sample_mode=True, block_indices=block_indices)
+        # ✅ FIX: Use ACTUAL training forward pass, not sample mode!
+        # Training uses cross_attn: model([xt, x0], sigma) where xt is noisy
+        x0 = batch['input_ids']
+        
+        # Create noisy input at low noise level (t=0.01 → almost clean)
+        t_low = torch.full((x0.shape[0], x0.shape[1]), 0.01, device=self.device)
+        _, p_low = self.noise(t_low)
+        xt_low = self.q_xt(x0, p_low)  # Add small amount of noise
+        
+        # Compute sigma from p
+        sigma_low = self._sigma_from_p(p_low[:, 0].unsqueeze(-1))
+        
+        # Use training mode: [xt, x0] concatenation if cross_attn
+        if self.cross_attn:
+          x_input = torch.cat((xt_low, x0), dim=-1)
+        else:
+          x_input = xt_low
+        
+        # Forward pass (same as training)
+        model_output = self.forward(x_input, sigma=sigma_low, block_indices=block_indices)
         pred_tokens = model_output.argmax(dim=-1)
         
         # Compare with ground truth
-        gt_tokens = batch['input_ids']
+        gt_tokens = x0
         accuracy = (pred_tokens == gt_tokens).float().mean().item()
         
         print(f"Token-level accuracy: {accuracy*100:.2f}%")
