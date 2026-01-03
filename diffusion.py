@@ -1264,221 +1264,141 @@ class Diffusion(L.LightningModule):
     return score
 
   def _analytic_update(self, x, t, dt, block_indices=None, x0_pred=None):
-    """
-    Analytic update with adaptive decoding strategy.
-    
-    Args:
-        x0_pred: Best guess of clean x0 (from previous step prediction)
-                 Used for cross_attn to match training [xt, x0]
-    
-    Strategy:
-      - Greedy (default): argmax - for HDP math reasoning (correctness)
-      - Sampling: categorical - for BD3-LM text generation (diversity)
-    """
-    # 1. Compute mask probabilities
-    curr_sigma = self._sigma_from_p(self.noise(t)[1])
-    next_sigma = self._sigma_from_p(self.noise(t - dt)[1])
-    
-    p_t = 1 - torch.exp(-curr_sigma)
-    p_s = 1 - torch.exp(-next_sigma)
-    p_t = torch.clamp(p_t, min=1e-6)
-    
-    prob_stay_masked = p_s / p_t
-    prob_unmask = 1.0 - prob_stay_masked
-    
-    # 🔍 DEBUG: Print first step info
-    if not hasattr(self, '_analytic_update_debug_printed'):
-        self._analytic_update_debug_printed = True
-        use_greedy = getattr(self.config.sampling, 'use_greedy_decoding', True)
-        print(f"\n🔍 [_analytic_update] Decoding Strategy: {'GREEDY (argmax)' if use_greedy else 'SAMPLING (categorical)'}")
-        print(f"   cross_attn: {self.cross_attn}")
-        print(f"   t: {t[0, 0].item():.4f}, dt: {dt:.6f}")
-        print(f"   curr_sigma: {curr_sigma[0].item():.4f}, next_sigma: {next_sigma[0].item():.4f}")
-        print(f"   prob_stay_masked: {prob_stay_masked.flatten()[0].item():.6f}")
-        print(f"   prob_unmask: {prob_unmask.flatten()[0].item():.6f}")
-    
-    if prob_stay_masked.ndim > 0:
-        prob_stay_masked = prob_stay_masked.view(-1, 1, 1)
-        prob_unmask = prob_unmask.view(-1, 1, 1)
-    
-    # 2. Forward pass with cross_attn support
-    # ✅ CRITICAL: Match training [xt_noisy, x0_clean]
-    if self.cross_attn:
-        # Use x0_pred (best guess from prev step) if available, else use x itself
-        x0_ref = x0_pred if x0_pred is not None else x
-        x_input = torch.cat((x, x0_ref), dim=-1)  # [xt, x0_pred] like training [xt, x0]
-    else:
-        x_input = x
-    
-    model_output = self.forward(x_input, curr_sigma, sample_mode=True, block_indices=block_indices)
-    
-    # ✅ FIX #1: HARD BAN STRUCTURAL/SPECIAL TOKENS FROM PREDICTION
-    # These tokens are injected by logic, NOT predicted by model!
-    plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
-    exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
-    answer_token_id = getattr(self.config.model, 'answer_token_id', 50260)
-    pad_token_id = getattr(self.tokenizer, 'pad_token_id', 50257)
-    bos_token_id = getattr(self.tokenizer, 'bos_token_id', None)
-    eos_token_id = getattr(self.tokenizer, 'eos_token_id', None)
-    
-    # Ban marker tokens
-    model_output[..., plan_token_id] = self.neg_infinity
-    model_output[..., exec_token_id] = self.neg_infinity
-    model_output[..., answer_token_id] = self.neg_infinity
-    # Ban special tokens (prevent garbage)
-    model_output[..., pad_token_id] = self.neg_infinity
-    if bos_token_id is not None:
-        model_output[..., bos_token_id] = self.neg_infinity
-    if eos_token_id is not None:
-        model_output[..., eos_token_id] = self.neg_infinity
-    
-    # 3. Adaptive decoding: Greedy vs Sampling
-    use_greedy = getattr(self.config.sampling, 'use_greedy_decoding', True)  # Default: greedy
-    
-    if use_greedy:
-        # GREEDY: argmax (same as training) - for correctness
-        pred_tokens = model_output.argmax(dim=-1)
-        
-        # 🔍 DEBUG: Check model predictions at Plan/Exec boundaries
-        if not hasattr(self, '_analytic_pred_debug'):
-            self._analytic_pred_debug = True
-            print(f"\n🔍 [_analytic_update] Model predictions (first step):")
-            # Position 128 = first Plan token
-            print(f"   pred_tokens[0, 128:138] = {pred_tokens[0, 128:138].tolist()}")
-            if hasattr(self, 'tokenizer'):
-                plan_pred = self.tokenizer.decode(pred_tokens[0, 128:138])
-                print(f"   Decoded (Plan start): '{plan_pred}'")
-    else:
-        # SAMPLING: categorical - for diversity (BD3-LM original)
-        p_x0 = model_output.to(torch.float64).exp()
-        
-        # Apply safety filters (prevent mask/pad prediction)
-        pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
-        p_x0[..., self.mask_index] = 0.0
-        if pad_token_id is not None:
-            p_x0[..., pad_token_id] = 0.0
-        
-        # Renormalize
-        p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
-        
-        # Compute posterior: p(x_t-1 | x_t, x_0)
-        probs = p_x0 * prob_unmask
-        probs[..., self.mask_index] = prob_stay_masked.squeeze(-1)
-        
-        # Sample from posterior
-        pred_tokens = _sample_categorical(probs)
-    
-    # =====================================================================
-    # 4. Confidence-gated unmasking + Early-step content blocking (FIXED)
-    # =====================================================================
+      """
+      Analytic update for DISCRETE DIFFUSION with HDP structure.
 
-    # ---- Hyperparameters (SAFE DEFAULTS) ----
-    SIGMA_CONTENT_START = 3.5     # > this: no content at all
-    SIGMA_FULL_CONTENT  = 2.0     # < this: free unmasking
-    CONF_THRESHOLD_HIGH = 2.5     # strict (early-mid)
-    CONF_THRESHOLD_LOW  = 1.2     # relaxed (late)
+      Principles:
+      - Diffusion unmasking is STOCHASTIC (prob_unmask)
+      - Content is gated by CONFIDENCE = logit margin (top1 - top2)
+      - No content at high sigma
+      - Markers are STRUCTURAL (never predicted)
+      """
 
-    avg_sigma = curr_sigma.mean().item()
+      # ================================================================
+      # 1. Noise schedule → unmask probability
+      # ================================================================
+      curr_sigma = self._sigma_from_p(self.noise(t)[1])
+      next_sigma = self._sigma_from_p(self.noise(t - dt)[1])
 
-    # Default: keep everything masked
-    pred_tokens_out = torch.full_like(x, self.mask_index)
-    should_unmask = torch.zeros_like(x, dtype=torch.bool)
+      p_t = 1.0 - torch.exp(-curr_sigma)
+      p_s = 1.0 - torch.exp(-next_sigma)
+      p_t = torch.clamp(p_t, min=1e-6)
 
-    # ---------------------------------------------------------------------
-    # 🚫 EARLY STEPS: absolutely no content
-    # ---------------------------------------------------------------------
-    if avg_sigma > SIGMA_CONTENT_START:
-        if not hasattr(self, "_early_block_dbg"):
-            self._early_block_dbg = True
-            print(f"   🚫 Early step (sigma={avg_sigma:.2f}): forcing ALL MASK")
+      prob_stay_masked = p_s / p_t
+      prob_unmask = 1.0 - prob_stay_masked
 
-    # ---------------------------------------------------------------------
-    # 🟡 MID / LATE STEPS: confidence-gated unmasking
-    # ---------------------------------------------------------------------
-    else:
-        # ---- sigma-based threshold scheduling ----
-        if avg_sigma > SIGMA_FULL_CONTENT:
-            # Linear interpolate threshold
-            alpha = (avg_sigma - SIGMA_FULL_CONTENT) / (SIGMA_CONTENT_START - SIGMA_FULL_CONTENT)
-            conf_threshold = (
-                alpha * CONF_THRESHOLD_HIGH
-                + (1.0 - alpha) * CONF_THRESHOLD_LOW
-            )
-        else:
-            # Late steps: be permissive
-            conf_threshold = CONF_THRESHOLD_LOW
+      if prob_unmask.ndim > 0:
+          prob_unmask = prob_unmask.view(-1, 1)
 
-        # ---- compute confidence (LOGIT, not prob) ----
-        top_logits, _ = model_output.max(dim=-1)   # (B, L)
-        can_unmask = top_logits > conf_threshold
+      avg_sigma = curr_sigma.mean().item()
 
-        # ---- block-aware gating (HDP) ----
-        if self.use_hdp_attention and self.hdp_block_sizes is not None:
-            q_len, p_len, e_len = self.hdp_block_sizes
+      # ================================================================
+      # 2. Forward pass (MATCH TRAINING!)
+      # ================================================================
+      if self.cross_attn:
+          x0_ref = x0_pred if x0_pred is not None else x
+          x_input = torch.cat((x, x0_ref), dim=-1)  # [xt, x0_pred]
+      else:
+          x_input = x
 
-            # Question block: NEVER mask (already clean)
-            can_unmask[:, :q_len] = False
+      logits = self.forward(
+          x_input,
+          curr_sigma,
+          sample_mode=True,
+          block_indices=block_indices
+      )
 
-            # Plan block: slightly conservative
-            can_unmask[:, q_len : q_len + p_len] &= (top_logits[:, q_len : q_len + p_len] > conf_threshold)
+      # ================================================================
+      # 3. HARD BAN structural + special tokens
+      # ================================================================
+      plan_id   = getattr(self.config.model, "plan_token_id", 50258)
+      exec_id   = getattr(self.config.model, "execution_token_id", 50259)
+      answer_id = getattr(self.config.model, "answer_token_id", 50260)
+      pad_id    = getattr(self.tokenizer, "pad_token_id", 50257)
 
-            # Execution / Answer: allow freer unmasking
-            can_unmask[:, q_len + p_len :] |= (top_logits[:, q_len + p_len :] > conf_threshold * 0.8)
+      logits[..., plan_id]   = self.neg_infinity
+      logits[..., exec_id]   = self.neg_infinity
+      logits[..., answer_id] = self.neg_infinity
+      logits[..., pad_id]    = self.neg_infinity
 
-        should_unmask = can_unmask
+      # ================================================================
+      # 4. Predict x0 (ARGMAX – correct for reasoning)
+      # ================================================================
+      pred_tokens = logits.argmax(dim=-1)
 
-        if not hasattr(self, "_conf_dbg"):
-            self._conf_dbg = True
-            print(f"   ✅ Content allowed (sigma={avg_sigma:.2f})")
-            print(f"   Confidence threshold: {conf_threshold:.2f}")
-            print(f"   Tokens passing threshold: {should_unmask.sum().item()}/{should_unmask.numel()}")
+      # ================================================================
+      # 5. CONFIDENCE = LOGIT MARGIN (CRITICAL FIX)
+      # ================================================================
+      top2, _ = logits.topk(2, dim=-1)
+      logit_margin = top2[..., 0] - top2[..., 1]
 
-    
-    # Combine: (1) random prob_unmask AND (2) confidence check
-    should_unmask = (torch.rand(x.shape, device=x.device) < prob_unmask.squeeze(-1).squeeze(-1))
-    
-    # Only apply confidence gate if not in early steps
-    if avg_sigma <= SIGMA_CONTENT_START:
-        should_unmask = should_unmask & can_unmask
-    
-    # ✅ FIX #2: FREEZE MARKER POSITIONS - NEVER UNMASK THEM!
-    # Markers must remain fixed at block boundaries
-    if self.use_hdp_attention and self.hdp_block_sizes is not None:
-        q_len, p_len, e_len = self.hdp_block_sizes
-        marker_positions = torch.zeros_like(x, dtype=torch.bool)
-        if x.shape[1] > q_len:
-            marker_positions[:, q_len] = True  # <|plan|>
-        if x.shape[1] > (q_len + p_len):
-            marker_positions[:, q_len + p_len] = True  # <|execution|>
-        # Prevent unmasking at marker positions
-        should_unmask = should_unmask & (~marker_positions)
-    
-    # Identify which positions are currently masked
-    is_mask = (x == self.mask_index)
-    
-    x_out = torch.where(is_mask & should_unmask, pred_tokens, x)
-    
-    # =================================================================
-    # 🥇 CRITICAL: HDP Structure Enforcement
-    # =================================================================
-    if self.use_hdp_attention and self.hdp_block_sizes is not None:
-        q_len, p_len, e_len = self.hdp_block_sizes
-        
-        # 1. FREEZE Question block (already clean from input, don't modify!)
-        # Copy Question tokens from original x to x_out
-        x_out[:, :q_len] = x[:, :q_len]
-        
-        # 2. Force markers at block boundaries (ALWAYS)
-        plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
-        exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
-        
-        if x_out.shape[1] > q_len:
-            x_out[:, q_len] = plan_token_id
-        if x_out.shape[1] > (q_len + p_len):
-            x_out[:, q_len + p_len] = exec_token_id
-    # =================================================================
-    
-    return x_out
+      # Sigma-aware threshold schedule
+      if avg_sigma > 3.0:
+          conf_threshold = 0.6
+      elif avg_sigma > 2.0:
+          conf_threshold = 0.3
+      else:
+          conf_threshold = 0.15
+
+      can_unmask = logit_margin > conf_threshold
+
+      # ================================================================
+      # 6. EARLY STEP HARD BLOCK (NO CONTENT)
+      # ================================================================
+      SIGMA_CONTENT_START = 3.5
+
+      if avg_sigma > SIGMA_CONTENT_START:
+          should_unmask = torch.zeros_like(x, dtype=torch.bool)
+      else:
+          # Anneal unmask probability by sigma
+          anneal = torch.clamp(
+              1.0 - avg_sigma / SIGMA_CONTENT_START,
+              min=0.05,
+              max=1.0
+          )
+
+          rand_unmask = torch.rand_like(x.float()) < (prob_unmask * anneal)
+          should_unmask = rand_unmask & can_unmask
+
+      # ================================================================
+      # 7. HDP STRUCTURE ENFORCEMENT
+      # ================================================================
+      if self.use_hdp_attention and self.hdp_block_sizes is not None:
+          q_len, p_len, e_len = self.hdp_block_sizes
+
+          # Question block: NEVER unmask (already clean)
+          should_unmask[:, :q_len] = False
+
+          # Marker positions: NEVER unmask
+          marker_pos = torch.zeros_like(x, dtype=torch.bool)
+          if x.shape[1] > q_len:
+              marker_pos[:, q_len] = True  # <|plan|>
+          if x.shape[1] > q_len + p_len:
+              marker_pos[:, q_len + p_len] = True  # <|execution|>
+
+          should_unmask &= ~marker_pos
+
+      # ================================================================
+      # 8. Apply update
+      # ================================================================
+      is_mask = (x == self.mask_index)
+      x_out = torch.where(is_mask & should_unmask, pred_tokens, x)
+
+      # ================================================================
+      # 9. FORCE HDP MARKERS (ABSOLUTE)
+      # ================================================================
+      if self.use_hdp_attention and self.hdp_block_sizes is not None:
+          q_len, p_len, _ = self.hdp_block_sizes
+
+          x_out[:, :q_len] = x[:, :q_len]  # freeze question
+
+          if x_out.shape[1] > q_len:
+              x_out[:, q_len] = plan_id
+          if x_out.shape[1] > q_len + p_len:
+              x_out[:, q_len + p_len] = exec_id
+
+      return x_out
+
 
   def _denoiser_update(self, x, t, block_indices=None):
     """
