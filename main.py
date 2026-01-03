@@ -74,10 +74,9 @@ def _load_from_checkpoint(config, tokenizer):
           tokenizer.add_tokens(dummy_tokens)
           print(f"   ✅ Added {num_missing} dummy tokens to tokenizer")
         
-        # Also update config vocab_size
-        omegaconf.OmegaConf.set_struct(config, False)
-        config.model.vocab_size = checkpoint_vocab_size
-        omegaconf.OmegaConf.set_struct(config, True)
+        # ⚠️ DON'T update config.model.vocab_size here!
+        # Model will be loaded from checkpoint which already has correct vocab_size
+        # Updating config causes model to be re-init with wrong vocab_size
 
   return diffusion.Diffusion.load_from_checkpoint(
     config.eval.checkpoint_path,
