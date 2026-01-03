@@ -570,11 +570,18 @@ def get_tokenizer(config):
   # GPT-2 tokenizer treats [...] as multiple tokens, but <|...|> is treated as special token
   special_tokens_dict = {'additional_special_tokens': ['<|plan|>', '<|execution|>', '<|answer|>']}
   num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
-  print(f"Tokenizer after adding special tokens: {tokenizer.vocab_size} tokens")
+  
+  # ✅ CRITICAL: Add mask_token to prevent Diffusion.__init__ from auto-incrementing vocab_size
+  # Without this, model adds +1 to vocab_size (50261 → 50262)
+  # This ensures training and inference use same vocab_size
+  if tokenizer.mask_token is None:
+    tokenizer.add_special_tokens({'mask_token': '<|mask|>'})
+    print(f"✅ Added mask_token: <|mask|>={tokenizer.mask_token_id}")
+  
   if num_added_toks > 0:
     print(f"✅ Tokenizer: Added {num_added_toks} special tokens: {special_tokens_dict['additional_special_tokens']}")
     print(f"   Token IDs: <|pad|>={tokenizer.pad_token_id}, <|plan|>={tokenizer.additional_special_tokens_ids[0]}, <|execution|>={tokenizer.additional_special_tokens_ids[1]}, <|answer|>={tokenizer.additional_special_tokens_ids[2]}")
-    print(f"   Vocab size is now: {tokenizer.vocab_size}")
+    print(f"   Vocab size (final): {len(tokenizer)}")  # Should be 50262 (50257 + 5 tokens)
   
   return tokenizer
 

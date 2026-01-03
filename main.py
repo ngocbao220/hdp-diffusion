@@ -57,43 +57,10 @@ def _load_from_checkpoint(config, tokenizer):
   
   print(f"\n🔧 Added {num_added} special tokens to tokenizer")
   print(f"   New tokenizer vocab_size: {len(tokenizer)}")
-  print(f"   Special tokens: <|pad|>={tokenizer.pad_token_id}, <|plan|>={tokenizer.additional_special_tokens_ids[0]}, <|execution|>={tokenizer.additional_special_tokens_ids[1]}, <|answer|>={tokenizer.additional_special_tokens_ids[2]}")
-
-  # Extract vocab_size from checkpoint BEFORE creating model
-  import torch
-  import omegaconf
-  ckpt = torch.load(config.eval.checkpoint_path, map_location='cpu', weights_only=False)
-  if 'state_dict' in ckpt:
-    # Get vocab_size from embedding layer shape
-    embed_key = 'backbone.vocab_embed.embedding'
-    if embed_key in ckpt['state_dict']:
-      checkpoint_vocab_size = ckpt['state_dict'][embed_key].shape[0]
-      print(f"\n🔧 Checkpoint vocab_size: {checkpoint_vocab_size}")
-      print(f"   Tokenizer vocab_size: {len(tokenizer)}")
-      
-      # ✅ FIX: Resize tokenizer to match checkpoint exactly
-      # This prevents "index out of range" errors when model predicts tokens >= tokenizer vocab
-      if checkpoint_vocab_size != len(tokenizer):
-        print(f"   ⚠️  MISMATCH DETECTED! Resizing tokenizer to {checkpoint_vocab_size}")
-        
-        # Add dummy tokens to reach checkpoint vocab size
-        num_missing = checkpoint_vocab_size - len(tokenizer)
-        if num_missing > 0:
-          dummy_tokens = [f'<|dummy_{i}|>' for i in range(num_missing)]
-          tokenizer.add_tokens(dummy_tokens)
-          print(f"   ✅ Added {num_missing} dummy tokens to tokenizer")
-      
-      # ✅ CRITICAL: Set mask_token to prevent auto-increment in __init__
-      # GPT-2 doesn't have mask_token, so Diffusion.__init__ adds +1 to vocab_size
-      # To prevent this, we set the last token as mask_token (which is checkpoint's mask_index)
-      if not tokenizer.mask_token:
-        tokenizer.mask_token = tokenizer.convert_ids_to_tokens(checkpoint_vocab_size - 1)
-        tokenizer.mask_token_id = checkpoint_vocab_size - 1
-        print(f"   ✅ Set mask_token_id = {tokenizer.mask_token_id} to prevent vocab_size auto-increment")
-        
-        # ⚠️ DON'T update config.model.vocab_size here!
-        # Model will be loaded from checkpoint which already has correct vocab_size
-        # Updating config causes model to be re-init with wrong vocab_size
+  print(f"   Special tokens: <|pad|>={tokenizer.pad_token_id}, <|plan|>={tokenizer.additional_special_tokens_ids[0]}, <|execution|>={tokenizer.additional_special_tokens_ids[1]}, <|answer|>={tokenizer.additional_special_tokens_ids[2]}, <|mask|>={tokenizer.mask_token_id}")
+  
+  # ✅ Tokenizer now has mask_token, so Diffusion.__init__ won't auto-increment vocab_size
+  # Training and inference will use same vocab_size = 50262 (50257 base + 5 special tokens)
 
   return diffusion.Diffusion.load_from_checkpoint(
     config.eval.checkpoint_path,
