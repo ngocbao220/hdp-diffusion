@@ -19,7 +19,7 @@ echo "Hierarchical Dual-Process Diffusion"
 echo "=========================================="
 
 # ============================================
-# EXPERIMENT CONFIGURATION (Chỉnh ở đây!)
+# EXPERIMENT CONFIGURATION
 # ============================================
 
 # Experiment Mode

@@ -547,11 +547,11 @@ class Diffusion(L.LightningModule):
              on_epoch=False,
              sync_dist=True)
     
-    # 🔍 DEBUG: At step 500, check if model learned anything
-    if self.global_step == 500:
+    # 🔍 DEBUG: Check if model learned anything
+    if self.global_step % 100 == 0 and self.global_step > 0:
       with torch.no_grad():
         print("\n" + "="*80)
-        print("🔍 [training_step] FINAL STEP 500 - MODEL LEARNING CHECK")
+        print(f"🔍 [training_step] MODEL LEARNING CHECK at step {self.global_step}")
         print("="*80)
         
         # Get model prediction at very low noise (near-deterministic)
