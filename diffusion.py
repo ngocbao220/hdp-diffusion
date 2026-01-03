@@ -1185,6 +1185,10 @@ class Diffusion(L.LightningModule):
     
     probs = stag_score * self._transp_transition(x, dsigma)
     
+    # ✅ CRITICAL FIX: Normalize probabilities before sampling
+    # probs must sum to 1 for categorical sampling
+    probs = probs / probs.sum(dim=-1, keepdim=True)
+    
     # Sample new tokens
     x_new = _sample_categorical(probs)
     
@@ -1203,6 +1207,10 @@ class Diffusion(L.LightningModule):
     stag_score = self._staggered_score(score, sigma)
     probs = stag_score * self._transp_transition(x, sigma)
     probs[..., self.mask_index] = 0
+    
+    # ✅ CRITICAL FIX: Normalize probabilities before sampling
+    probs = probs / probs.sum(dim=-1, keepdim=True)
+    
     samples = _sample_categorical(probs)
     return samples
 
