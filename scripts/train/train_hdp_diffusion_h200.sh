@@ -36,7 +36,7 @@ GRAD_ACCUM=6             # Balanced for speed and memory
 # Training hyperparameters (optimized for 5 hours)
 MAX_STEPS=10000       # Reduced from 50000 for 5-hour training
 WARMUP_STEPS=1000     # Reduced proportionally
-VAL_EVERY_N_EPOCH=2      # Validate every 2 epochs (less frequent)
+VAL_EVERY_N_EPOCH=200      # Validate every 200 epochs (less frequent)
 LOG_INTERVAL=50
 
 # Learning rate (increased for larger batch)
@@ -98,9 +98,11 @@ python -u main.py \
     trainer.log_every_n_steps=${LOG_INTERVAL} \
     trainer.devices=1 \
     trainer.num_nodes=1 \
-    +trainer.strategy=ddp \
+    +trainer.strategy=auto \
     trainer.precision=bf16-mixed \
     trainer.gradient_clip_val=1.0 \
+    +sampling.disable_val_sampling=true \
+    +callbacks.checkpoint_monitor.save_last=true \
     wandb.name=hdp-diffusion-h200-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S) \
     wandb.project=hdp-diffusion-h200 \
     wandb.tags=[hdp,gsm8k,hierarchical,h200,bs${BLOCK_SIZE}] \
