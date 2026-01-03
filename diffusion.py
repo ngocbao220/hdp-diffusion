@@ -1181,13 +1181,13 @@ class Diffusion(L.LightningModule):
         print(f"   Top 5 tokens: {stag_at_mask.topk(5).indices.tolist()}")
         print(f"   Top 5 scores: {stag_at_mask.topk(5).values.tolist()}")
         print(f"   Score[mask_index={self.mask_index}]: {stag_at_mask[self.mask_index].item():.4f}")
-        print(f"   Mask probability should be high (close to 1.0) early in sampling")
+        print(f"   Sum of probs: {stag_at_mask.sum().item():.6f}")
+        print(f"   ✅ stag_score is already a valid probability distribution!")
     
-    probs = stag_score * self._transp_transition(x, dsigma)
-    
-    # ✅ CRITICAL FIX: Normalize probabilities before sampling
-    # probs must sum to 1 for categorical sampling
-    probs = probs / probs.sum(dim=-1, keepdim=True)
+    # ✅ CRITICAL: stag_score is ALREADY a proper probability distribution!
+    # DO NOT multiply by _transp_transition (that's for SEDD, not BD3-LM)
+    # DO NOT normalize (stag_score already sums to 1)
+    probs = stag_score
     
     # Sample new tokens
     x_new = _sample_categorical(probs)
