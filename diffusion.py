@@ -1265,11 +1265,14 @@ class Diffusion(L.LightningModule):
     # This allows mask to transition to any token with equal probability
     mask_positions = (i == self.mask_index)
     if mask_positions.any():
-      # Uniform distribution: 1/vocab_size for each token
-      uniform_prob = (1 - torch.exp(-sigma)) / (self.vocab_size - 1)
-      edge[mask_positions] = uniform_prob.expand(
-        mask_positions.sum(), self.vocab_size
-      )
+      # Uniform distribution: (1-exp(-sigma))/(vocab_size-1) for each token
+      # sigma shape: [batch, 1, 1], need to broadcast correctly
+      uniform_val = (1 - torch.exp(-sigma)).squeeze()  # Squeeze to scalar/1D
+      uniform_prob = uniform_val / (self.vocab_size - 1)
+      
+      # edge[mask_positions] has shape [num_masks, vocab_size]
+      # Broadcast uniform_prob to match
+      edge[mask_positions] = uniform_prob
     
     return edge
 
