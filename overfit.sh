@@ -97,6 +97,7 @@ echo "  Output: ${OUTPUT_DIR}"
 echo "=========================================="
 
 # Run HDP-Diffusion training with configurable parameters
+CUDA_LAUNCH_BLOCKING=1 TORCH_USE_CUDA_DSA=1
 python -u main.py \
     mode=${MODE} \
     model=${MODEL_SIZE} \
