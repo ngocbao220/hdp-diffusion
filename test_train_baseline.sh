@@ -27,8 +27,7 @@ python main.py \
     optim.lr=1e-4 \
     trainer.max_steps=500 \
     trainer.accumulate_grad_batches=1 \
-    trainer.log_every_n_steps=10 \
-    trainer.devices=1 \
+    trainer.log_every_n_steps=10 \    trainer.val_check_interval=1 \
     trainer.precision=bf16-mixed \
     sampling.num_steps=64 \
     sampling.first_hitting=true \
