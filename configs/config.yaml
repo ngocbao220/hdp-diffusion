@@ -1,6 +1,7 @@
 defaults:
   - _self_
-  - /callbacks: [checkpoint_every_n_steps, checkpoint_monitor, learning_rate_monitor]
+  - /callbacks:
+      [checkpoint_every_n_steps, checkpoint_monitor, learning_rate_monitor]
   - /data: openwebtext
   - /model: small
   - /strategy: ddp
@@ -8,7 +9,7 @@ defaults:
   - /lr_scheduler: constant_warmup
   - /algo: bd3lm
 
-mode: train  # train / ppl_eval / sample_eval
+mode: train # train / ppl_eval / sample_eval
 diffusion: absorbing_state
 
 seed: 1
@@ -26,12 +27,13 @@ loader:
 
 sampling:
   noise_removal: False
-  num_sample_batches: 1  # Total samples: `num_gpus` * `loader.eval_batch_size` * num_sample_batches
+  num_sample_batches: 1 # Total samples: `num_gpus` * `loader.eval_batch_size` * num_sample_batches
   var_length: False
   logdir: ./samples_${algo.name}_len${model.length}_blocksize${block_size}
   nucleus_p: 1.0
   first_hitting: True # should be set to true when T >> block_size
   kv_cache: False
+  use_greedy_decoding: true
 
 training:
   ema: 0.9999
@@ -45,11 +47,11 @@ training:
   eval_nll: True # always evaluate nll if block size is 1
 
 eval:
-  checkpoint_path: ${cwd:}/checkpoints/last.ckpt  # Used to evaluate a checkpoint after training.
+  checkpoint_path: ${cwd:}/checkpoints/last.ckpt # Used to evaluate a checkpoint after training.
   disable_ema: False
   perplexity_batch_size: 8
   compute_perplexity_on_sanity: False
-  gen_ppl_eval_model_name_or_path: gpt2-large  # gpt2-large, meta-llama/Llama-2-7b-hf
+  gen_ppl_eval_model_name_or_path: gpt2-large # gpt2-large, meta-llama/Llama-2-7b-hf
   generate_samples: False
 
 optim:
@@ -66,12 +68,12 @@ trainer:
   devices: ${device_count:}
   accumulate_grad_batches: ${div_up:${loader.global_batch_size}, ${eval:${trainer.devices} * ${loader.batch_size} * ${trainer.num_nodes}}}
   gradient_clip_val: 1.0
-  precision: 'bf16'
+  precision: "bf16"
   num_sanity_val_steps: 2
   max_steps: 1_000_000
   log_every_n_steps: 1_000
-  limit_train_batches: 1.0   # train on full dataset, can be used to toggle quick run
-  limit_val_batches: 1.0     # validate on full dataset, can be used to toggle quick run
+  limit_train_batches: 1.0 # train on full dataset, can be used to toggle quick run
+  limit_val_batches: 1.0 # validate on full dataset, can be used to toggle quick run
   val_check_interval: 10_000
 
 wandb:

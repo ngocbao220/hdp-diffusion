@@ -1244,10 +1244,13 @@ class Diffusion(L.LightningModule):
 
   def _analytic_update(self, x, t, dt, block_indices=None):
     """
-    Analytic update with SAFETY FILTER + ANCHORING.
-    Optimized: Filter p_x0 BEFORE calculating posterior.
+    Analytic update with adaptive decoding strategy.
+    
+    Strategy:
+      - Greedy (default): argmax - for HDP math reasoning (correctness)
+      - Sampling: categorical - for BD3-LM text generation (diversity)
     """
-    # 1. Tính toán xác suất Mask (Giữ nguyên)
+    # 1. Compute mask probabilities
     curr_sigma = self._sigma_from_p(self.noise(t)[1])
     next_sigma = self._sigma_from_p(self.noise(t - dt)[1])
     
@@ -1258,69 +1261,53 @@ class Diffusion(L.LightningModule):
     prob_stay_masked = p_s / p_t
     prob_unmask = 1.0 - prob_stay_masked
     
-    # 🔍 DEBUG: Print first step probabilities
+    # 🔍 DEBUG: Print first step info
     if not hasattr(self, '_analytic_update_debug_printed'):
         self._analytic_update_debug_printed = True
-        print(f"\n🔍 [_analytic_update] FIRST STEP DEBUG:")
+        use_greedy = getattr(self.config.sampling, 'use_greedy_decoding', True)
+        print(f"\n🔍 [_analytic_update] Decoding Strategy: {'GREEDY (argmax)' if use_greedy else 'SAMPLING (categorical)'}")
         print(f"   t: {t[0, 0].item():.4f}, dt: {dt:.6f}")
         print(f"   curr_sigma: {curr_sigma[0].item():.4f}, next_sigma: {next_sigma[0].item():.4f}")
-        print(f"   p_t: {p_t[0].item():.4f}, p_s: {p_s[0].item():.4f}")
         print(f"   prob_stay_masked: {prob_stay_masked.flatten()[0].item():.6f}")
         print(f"   prob_unmask: {prob_unmask.flatten()[0].item():.6f}")
     
     if prob_stay_masked.ndim > 0:
         prob_stay_masked = prob_stay_masked.view(-1, 1, 1)
         prob_unmask = prob_unmask.view(-1, 1, 1)
+    
+    # 2. Forward pass
+    model_output = self.forward(x, curr_sigma, sample_mode=True, block_indices=block_indices)
+    
+    # 3. Adaptive decoding: Greedy vs Sampling
+    use_greedy = getattr(self.config.sampling, 'use_greedy_decoding', True)  # Default: greedy
+    
+    if use_greedy:
+        # GREEDY: argmax (same as training) - for correctness
+        pred_tokens = model_output.argmax(dim=-1)
+    else:
+        # SAMPLING: categorical - for diversity (BD3-LM original)
+        p_x0 = model_output.to(torch.float64).exp()
         
-    # 2. Lấy dự đoán từ Model
-    p_x0 = self.get_score(x, curr_sigma, block_indices=block_indices)
+        # Apply safety filters (prevent mask/pad prediction)
+        pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
+        p_x0[..., self.mask_index] = 0.0
+        if pad_token_id is not None:
+            p_x0[..., pad_token_id] = 0.0
+        
+        # Renormalize
+        p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
+        
+        # Compute posterior: p(x_t-1 | x_t, x_0)
+        probs = p_x0 * prob_unmask
+        probs[..., self.mask_index] = prob_stay_masked.squeeze(-1)
+        
+        # Sample from posterior
+        pred_tokens = _sample_categorical(probs)
     
-    # 🔍 DEBUG: Check model prediction before filter
-    if not hasattr(self, '_analytic_update_p_x0_debug'):
-        self._analytic_update_p_x0_debug = True
-        mask_prob = p_x0[0, 128, self.mask_index].item()
-        top_5_probs, top_5_idx = p_x0[0, 128].topk(5)
-        print(f"\n🔍 [_analytic_update] Model prediction at position 128 (BEFORE filter):")
-        print(f"   p_x0[mask_index={self.mask_index}]: {mask_prob:.6f}")
-        print(f"   Top 5 tokens: {top_5_idx.tolist()}")
-        print(f"   Top 5 probs: {top_5_probs.tolist()}")
-    
-    # =================================================================
-    # 🛡️ SAFETY FILTER (Làm sạch p_x0 TRƯỚC khi tính toán tiếp)
-    # =================================================================
-    # 1. Cấm model đoán ra chính Mask Token (tránh vòng lặp)
-    p_x0[..., self.mask_index] = 0.0
-    
-    # 2. Cấm PAD token (50257)
-    pad_token_id = 50257
-    if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
-        pad_token_id = self.tokenizer.pad_token_id
-    p_x0[..., pad_token_id] = 0.0
-
-    # 3. Renormalize: Chia lại xác suất cho các token đúng (ví dụ [PLAN])
-    # Điều này giúp xác suất của token đúng tăng lên, model sẽ tự tin unmask hơn
-    p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
-    # =================================================================
-
-    # 3. Tính Posterior (Sau khi p_x0 đã sạch)
-    probs = p_x0 * prob_unmask
-    probs[..., self.mask_index] = prob_stay_masked.squeeze(-1)
-    
-    # 🔍 DEBUG: Check final probs before sampling
-    if not hasattr(self, '_analytic_update_probs_debug'):
-        self._analytic_update_probs_debug = True
-        final_mask_prob = probs[0, 128, self.mask_index].item()
-        top_5_probs, top_5_idx = probs[0, 128].topk(5)
-        print(f"\n🔍 [_analytic_update] Final probs at position 128 (AFTER adding stay_masked):")
-        print(f"   probs[mask_index]: {final_mask_prob:.6f}")
-        print(f"   Top 5 tokens: {top_5_idx.tolist()}")
-        print(f"   Top 5 probs: {top_5_probs.tolist()}")
-        print(f"   Probs sum: {probs[0, 128].sum().item():.6f}")
-    
-    # 4. Sampling
-    x_new = _sample_categorical(probs)
+    # 4. Apply unmasking based on probability threshold
+    should_unmask = (torch.rand_like(prob_unmask.float()) < prob_unmask.float())
     is_mask = (x == self.mask_index)
-    x_out = torch.where(is_mask, x_new, x)
+    x_out = torch.where(is_mask & should_unmask.squeeze(-1), pred_tokens, x)
     
     # =================================================================
     # 🥇 CRITICAL: Force markers at block boundaries (ALWAYS)
@@ -1343,32 +1330,37 @@ class Diffusion(L.LightningModule):
 
   def _denoiser_update(self, x, t, block_indices=None):
     """
-    Final denoising step: Simplified version + Safety + Anchoring.
+    Final denoising step with adaptive decoding strategy.
+    
+    Strategy:
+      - Greedy (default): argmax - for correctness
+      - Sampling: categorical - for diversity
     """
-    # 1. Lấy độ nhiễu hiện tại
+    # 1. Get noise level
     sigma = self._sigma_from_p(self.noise(t)[1])
     
-    # 2. Lấy dự đoán của model
-    p_x0 = self.get_score(x, sigma, block_indices=block_indices)
+    # 2. Forward pass
+    model_output = self.forward(x, sigma, sample_mode=True, block_indices=block_indices)
     
-    # =================================================================
-    # 🛡️ SAFETY FILTER
-    # =================================================================
-    # Cấm Mask
-    p_x0[..., self.mask_index] = 0.0
+    # 3. Adaptive decoding
+    use_greedy = getattr(self.config.sampling, 'use_greedy_decoding', True)  # Default: greedy
     
-    # Cấm PAD
-    pad_id = 50257
-    if hasattr(self.tokenizer, 'pad_token_id') and self.tokenizer.pad_token_id is not None:
-        pad_id = self.tokenizer.pad_token_id
-    p_x0[..., pad_id] = 0.0
-    
-    # Renormalize
-    p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
-    # =================================================================
-    
-    # 3. Sampling trực tiếp
-    samples = _sample_categorical(p_x0)
+    if use_greedy:
+        # GREEDY: argmax (same as training)
+        samples = model_output.argmax(dim=-1)
+    else:
+        # SAMPLING: categorical (BD3-LM original)
+        p_x0 = model_output.to(torch.float64).exp()
+        
+        # Safety filters
+        pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
+        p_x0[..., self.mask_index] = 0.0
+        if pad_token_id is not None:
+            p_x0[..., pad_token_id] = 0.0
+        
+        # Renormalize and sample
+        p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
+        samples = _sample_categorical(p_x0)
     
     # =================================================================
     # 🥇 CRITICAL: Force markers in final step too
