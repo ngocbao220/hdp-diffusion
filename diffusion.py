@@ -640,10 +640,9 @@ class Diffusion(L.LightningModule):
               question_tokens=None
             )
           
-          # Decode
-          tokenizer = val_dataloader.tokenizer
-          generated = tokenizer.decode(samples[0], skip_special_tokens=False)
-          ground_truth = tokenizer.decode(input_ids[0], skip_special_tokens=False)
+          # Decode - use self.tokenizer instead of dataloader.tokenizer
+          generated = self.tokenizer.decode(samples[0], skip_special_tokens=False)
+          ground_truth = self.tokenizer.decode(input_ids[0], skip_special_tokens=False)
           
           print(f"\n📝 GROUND TRUTH:")
           print(f"   {ground_truth[:200]}...")
