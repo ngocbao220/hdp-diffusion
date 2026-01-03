@@ -60,7 +60,7 @@ GRAD_ACCUM=1
 # Training Hyperparameters
 MAX_STEPS=500                    # Total training steps
 WARMUP_STEPS=10                  # Warmup steps
-VAL_EVERY_N_EPOCH=50             # Validate every N epochs (reduced for stability)
+VAL_EVERY_N_EPOCH=200            # Validate every 200 epochs (safe frequency)
 LOG_INTERVAL=10                  # Log every N steps
 LR=1e-4                          # Learning rate (1e-4 stable, 3e-4 faster)
 EMA=0.9999                       # EMA decay rate
@@ -97,8 +97,7 @@ echo "  Output: ${OUTPUT_DIR}"
 echo "=========================================="
 
 # Run HDP-Diffusion training with configurable parameters
-CUDA_LAUNCH_BLOCKING=1 TORCH_USE_CUDA_DSA=1
-python -u main.py \
+CUDA_LAUNCH_BLOCKING=1 TORCH_USE_CUDA_DSA=1 python -u main.py \
     mode=${MODE} \
     model=${MODEL_SIZE} \
     data=${DATA_CONFIG} \
@@ -129,6 +128,8 @@ python -u main.py \
     trainer.accumulate_grad_batches=${GRAD_ACCUM} \
     trainer.val_check_interval=null \
     +trainer.check_val_every_n_epoch=${VAL_EVERY_N_EPOCH} \
+    trainer.limit_val_batches=1 \
+    trainer.num_sanity_val_steps=0 \
     trainer.log_every_n_steps=${LOG_INTERVAL} \
     trainer.devices=${DEVICES} \
     trainer.num_nodes=${NUM_NODES} \

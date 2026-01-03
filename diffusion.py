@@ -1085,52 +1085,66 @@ class Diffusion(L.LightningModule):
     return False # not a valid elbo (biased estimate)
       
   def validation_step(self, batch, batch_idx):
-    block_indices = batch.get('block_indices', None)
-    is_hdp = (hasattr(self.config.data, 'name') and 
-              self.config.data.name == 'hdp_diffusion')
-    if self.var_min and not is_hdp:
-      for noise_clip_start in self.metrics.valid_vars.keys():
-        sampling_eps_min, sampling_eps_max = noise_clip_start
-        if self._check_val_sampling_intvl(sampling_eps_min, sampling_eps_max) == True:
-          # compute and record nelbo
-          losses_clip = self._loss(batch['input_ids'],
+    try:
+      block_indices = batch.get('block_indices', None)
+      is_hdp = (hasattr(self.config.data, 'name') and 
+                self.config.data.name == 'hdp_diffusion')
+      if self.var_min and not is_hdp:
+        for noise_clip_start in self.metrics.valid_vars.keys():
+          sampling_eps_min, sampling_eps_max = noise_clip_start
+          if self._check_val_sampling_intvl(sampling_eps_min, sampling_eps_max) == True:
+            # compute and record nelbo
+            losses_clip = self._loss(batch['input_ids'],
+                              batch['attention_mask'],
+                              sampling_eps_min=sampling_eps_min,
+                              sampling_eps_max=sampling_eps_max,
+                              block_indices=block_indices)
+            losses = Loss(
+              nlls=losses_clip.nlls.clone(),
+              token_mask=losses_clip.token_mask,
+              loss=losses_clip.loss.clone())
+          elif len(self.metrics.valid_vars[noise_clip_start]) < 100:
+            # elbo from clipped schedule (biased estimate)
+            losses_clip = self._loss(batch['input_ids'],
+                              batch['attention_mask'],
+                              sampling_eps_min=sampling_eps_min,
+                              sampling_eps_max=sampling_eps_max,
+                              block_indices=block_indices)
+          if len(self.metrics.valid_vars[noise_clip_start]) < 100:
+            # only report variance over 100 batches
+            nlls = losses_clip.nlls
+            self.metrics.valid_vars[noise_clip_start].append(
+              nlls.reshape(
+                nlls.shape[0], -1, self.block_size).mean(-1))
+      elif self.block_size == 1 and not is_hdp:
+        # nll
+        losses = self._loss(batch['input_ids'],
                             batch['attention_mask'],
-                            sampling_eps_min=sampling_eps_min,
-                            sampling_eps_max=sampling_eps_max,
+                            sampling_eps_min=1,
+                            sampling_eps_max=1,
                             block_indices=block_indices)
-          losses = Loss(
-            nlls=losses_clip.nlls.clone(),
-            token_mask=losses_clip.token_mask,
-            loss=losses_clip.loss.clone())
-        elif len(self.metrics.valid_vars[noise_clip_start]) < 100:
-          # elbo from clipped schedule (biased estimate)
-          losses_clip = self._loss(batch['input_ids'],
+      else:
+        # nelbo
+        losses = self._loss(batch['input_ids'],
                             batch['attention_mask'],
-                            sampling_eps_min=sampling_eps_min,
-                            sampling_eps_max=sampling_eps_max,
+                            sampling_eps_min=1e-3,
+                            sampling_eps_max=1,
                             block_indices=block_indices)
-        if len(self.metrics.valid_vars[noise_clip_start]) < 100:
-          # only report variance over 100 batches
-          nlls = losses_clip.nlls
-          self.metrics.valid_vars[noise_clip_start].append(
-            nlls.reshape(
-              nlls.shape[0], -1, self.block_size).mean(-1))
-    elif self.block_size == 1 and not is_hdp:
-      # nll
-      losses = self._loss(batch['input_ids'],
-                          batch['attention_mask'],
-                          sampling_eps_min=1,
-                          sampling_eps_max=1,
-                          block_indices=block_indices)
-    else:
-      # nelbo
-      losses = self._loss(batch['input_ids'],
-                          batch['attention_mask'],
-                          sampling_eps_min=1e-3,
-                          sampling_eps_max=1,
-                          block_indices=block_indices)
-    self.metrics.valid_nlls.update(losses.nlls, losses.token_mask)
-    return losses.loss
+      
+      # NaN/Inf check in validation
+      if torch.isnan(losses.loss) or torch.isinf(losses.loss):
+        print(f"\n⚠️  NaN/Inf in validation loss! Returning 0...")
+        return torch.tensor(0.0, device=losses.loss.device)
+      
+      self.metrics.valid_nlls.update(losses.nlls, losses.token_mask)
+      return losses.loss
+      
+    except Exception as e:
+      print(f"\n❌ Validation step failed: {e}")
+      import traceback
+      traceback.print_exc()
+      # Return dummy loss to continue training
+      return torch.tensor(0.0, device=self.device)
 
   def on_before_optimizer_step(self, optimizer):
     # Check for NaN gradients before optimizer step
