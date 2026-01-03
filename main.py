@@ -47,9 +47,13 @@ def _load_from_checkpoint(config, tokenizer):
   num_added = tokenizer.add_special_tokens(special_tokens_dict)
   
   # Store marker IDs for hard position anchoring
+  # Need to disable struct mode to add new keys
+  import omegaconf
+  omegaconf.OmegaConf.set_struct(config, False)
   config.model.plan_token_id = tokenizer.additional_special_tokens_ids[0]
   config.model.execution_token_id = tokenizer.additional_special_tokens_ids[1]
   config.model.answer_token_id = tokenizer.additional_special_tokens_ids[2]
+  omegaconf.OmegaConf.set_struct(config, True)
   
   print(f"\n🔧 Added {num_added} special tokens to tokenizer")
   print(f"   New tokenizer vocab_size: {len(tokenizer)}")
