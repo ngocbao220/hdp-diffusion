@@ -138,8 +138,7 @@ CUDA_LAUNCH_BLOCKING=1 TORCH_USE_CUDA_DSA=1 python -u main.py \
     trainer.precision=${PRECISION} \
     trainer.gradient_clip_val=${GRAD_CLIP} \
     +sampling.disable_val_sampling=true \
-    +callbacks.checkpoint_monitor.monitor=train/loss \
-    +callbacks.checkpoint_monitor.mode=min \
+    +callbacks.checkpoint_every_n_steps.every_n_train_steps=100 \
     wandb.name=${EXP_NAME}-${SAMPLER}-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S) \
     wandb.project=hdp-diffusion-experiments \
     wandb.tags=[hdp,gsm8k,${SAMPLER},bs${BLOCK_SIZE}] \
