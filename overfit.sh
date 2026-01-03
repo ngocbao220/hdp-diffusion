@@ -60,7 +60,7 @@ GRAD_ACCUM=1
 # Training Hyperparameters
 MAX_STEPS=500                    # Total training steps
 WARMUP_STEPS=10                  # Warmup steps
-VAL_EVERY_N_EPOCH=10             # Validate every N epochs
+VAL_EVERY_N_EPOCH=100             # Validate every N epochs
 LOG_INTERVAL=10                  # Log every N steps
 LR=1e-4                          # Learning rate (1e-4 stable, 3e-4 faster)
 EMA=0.9999                       # EMA decay rate

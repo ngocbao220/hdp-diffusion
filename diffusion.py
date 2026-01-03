@@ -34,8 +34,11 @@ def _sample_categorical(categorical_probs):
     print(f"   categorical_probs.shape: {categorical_probs.shape}")
     print(f"   samples.shape: {samples.shape}")
     print(f"   samples unique values: {torch.unique(samples).tolist()[:20]}")  # First 20
-    print(f"   First 10 samples: {samples[0, :10].tolist()}")
-    print(f"   Samples at positions 128-138 (Plan block): {samples[0, 128:138].tolist()}")
+    
+    # Show first 10 samples (or less if sequence is shorter)
+    seq_len = samples.shape[1]
+    show_len = min(10, seq_len)
+    print(f"   First {show_len} samples: {samples[0, :show_len].tolist()}")
     
     # Check if we sampled high indices
     max_sample = samples.max().item()
@@ -45,12 +48,16 @@ def _sample_categorical(categorical_probs):
     else:
       print(f"   ⚠️  Max sample {max_sample} < 50000!")
       
-    # Check probs at position 128 (first Plan token)
-    probs_at_128 = categorical_probs[0, 128]
-    top5 = probs_at_128.topk(5)
-    print(f"   Probs at position 128 (first Plan token):")
-    print(f"     Top 5 indices: {top5.indices.tolist()}")
-    print(f"     Top 5 probs: {top5.values.tolist()}")
+    # Check probs at position 128 (first Plan token) - only if sequence is long enough
+    if seq_len > 128:
+      print(f"   Samples at positions 128-138 (Plan block): {samples[0, 128:min(138, seq_len)].tolist()}")
+      probs_at_128 = categorical_probs[0, 128]
+      top5 = probs_at_128.topk(5)
+      print(f"   Probs at position 128 (first Plan token):")
+      print(f"     Top 5 indices: {top5.indices.tolist()}")
+      print(f"     Top 5 probs: {top5.values.tolist()}")
+    else:
+      print(f"   ℹ️  Sequence length {seq_len} < 128 (semi_ar block sampling)")
   
   return samples
 
