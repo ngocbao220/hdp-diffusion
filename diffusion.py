@@ -1531,14 +1531,15 @@ class Diffusion(L.LightningModule):
       question_tokens=None
   ): 
       """
-      Analytic sampler with HDP support + FIXED BLOCK INDICES + MARKER ANCHORING + BOS FIX.
+      Analytic sampler: FIXED POSITIONAL ALIGNMENT.
+      Corrects the Double BOS issue and aligns question text to index 1.
       """
-      # 1. Khởi tạo nhiễu (Mask)
+      # 1. Khởi tạo nhiễu
       x = self._sample_prior(n_samples, seqlen).to(self.device)
       
-      print(f"🔍 [_analytic_sampler] Starting sampling")
+      print(f"🔍 [_analytic_sampler] Starting sampling (FIXED ALIGNMENT)")
 
-      # 2. Xử lý HDP Config (Giữ nguyên)
+      # 2. HDP Config Check
       if self.use_hdp_attention:
         if not hasattr(self, 'hdp_block_sizes') or self.hdp_block_sizes is None:
           if hasattr(self.config, 'data') and hasattr(self.config.data, 'hdp'):
@@ -1550,6 +1551,7 @@ class Diffusion(L.LightningModule):
           else:
               self.use_hdp_attention = False
         
+        # Scaling logic if mismatch
         if self.use_hdp_attention and self.hdp_block_sizes is not None:
           expected_len = sum(self.hdp_block_sizes)
           if expected_len != seqlen:
@@ -1560,47 +1562,52 @@ class Diffusion(L.LightningModule):
               e_len = max(1, seqlen - q_len - p_len)
               self.hdp_block_sizes = (q_len, p_len, e_len)
 
-      # 3. Setup HDP Context
+      # 3. Setup Layout
       block_indices = None
       q_len, p_len, e_len = 0, 0, 0
+      
+      # Lấy ID của BOS/PAD
+      bos_token = self.tokenizer.bos_token_id if self.tokenizer.bos_token_id is not None else 50256
+      pad_token = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 50257
       
       if self.use_hdp_attention and self.hdp_block_sizes is not None:
           q_len, p_len, e_len = self.hdp_block_sizes
           
-          # Tạo block_indices
+          # 3.1 Tạo Block Indices
           b_q = torch.zeros(q_len, dtype=torch.long, device=self.device)
           b_p = torch.ones(p_len, dtype=torch.long, device=self.device)
           b_e = torch.full((e_len,), 2, dtype=torch.long, device=self.device)
           block_indices = torch.cat([b_q, b_p, b_e]).unsqueeze(0).repeat(n_samples, 1)
           
-          # Setup Question Tokens
+          # 3.2 Điền Question vào đúng vị trí
+          # Vị trí 0: Luôn là BOS
+          x[:, 0] = bos_token 
+          
           if question_tokens is not None: 
               if question_tokens.shape[0] == 1 and n_samples > 1:
                   question_tokens = question_tokens.repeat(n_samples, 1)
               
-              # ✅ FIX: Thêm [BOS] vào đầu câu hỏi (Shift phải 1 vị trí)
-              # Nếu training dùng BOS, inference BẮT BUỘC phải có BOS
-              bos_token = self.tokenizer.bos_token_id if self.tokenizer.bos_token_id is not None else self.tokenizer.cls_token_id
-              if bos_token is None: bos_token = 50256 # Fallback GPT2 default
+              # Tính toán độ dài khả dụng cho text (trừ đi 1 slot cho BOS)
+              available_len = q_len - 1 
+              curr_q_len = question_tokens.shape[1]
               
-              # Chèn BOS vào trước: [Q1, Q2...] -> [BOS, Q1, Q2...]
-              # pad trái 1 token
-              question_tokens = F.pad(question_tokens, (1, 0), value=bos_token)
-              
-              # Cắt hoặc Pad cho đủ q_len
-              if question_tokens.shape[1] < q_len:
-                  pad_len = q_len - question_tokens.shape[1]
-                  pad_token = self.tokenizer.pad_token_id if hasattr(self.tokenizer, 'pad_token_id') else 0
-                  question_tokens = F.pad(question_tokens, (0, pad_len), value=pad_token)
+              # Cắt hoặc Pad Question text
+              if curr_q_len > available_len:
+                  # Cắt bớt nếu dài quá
+                  q_text = question_tokens[:, :available_len]
               else:
-                  question_tokens = question_tokens[:, :q_len]
+                  # Pad nếu ngắn hơn (pad bên phải)
+                  pad_amt = available_len - curr_q_len
+                  q_text = F.pad(question_tokens, (0, pad_amt), value=pad_token)
               
-              # Gán Question vào x
-              x[:, :q_len] = question_tokens
+              # ✅ ALIGNMENT FIX: Điền Question bắt đầu từ Index 1
+              x[:, 1:q_len] = q_text
+              
           else:
-              x[:, 0] = self.tokenizer.bos_token_id
+              # Nếu không có question, điền PAD vào phần còn lại của Question Block
+              x[:, 1:q_len] = pad_token
 
-          # Anchoring
+          # 3.3 Anchoring Markers
           plan_token_id = getattr(self.config.model, 'plan_token_id', 50258)
           exec_token_id = getattr(self.config.model, 'execution_token_id', 50259)
           
@@ -1610,31 +1617,31 @@ class Diffusion(L.LightningModule):
               x[:, q_len + p_len] = exec_token_id
 
       else:
-          x[:, 0] = self.tokenizer.bos_token_id
+          x[:, 0] = bos_token
       
       timesteps = torch.linspace(1, eps, num_steps + 1, device=self.device)
       dt = (1 - eps) / num_steps
       
-      # 4. Vòng lặp Denoising
+      # 4. Loop
       for i in tqdm(range(num_steps), desc='HDP Sampling'):
           t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
 
-          # Truyền block_indices
           x = self._analytic_update(x=x, t=t, dt=dt, block_indices=block_indices)
           
-          # Re-enforce Question & Markers
+          # Re-enforce (giữ nguyên layout đã fix)
           if self.use_hdp_attention and question_tokens is not None:
-              x[:, :q_len] = question_tokens
+              x[:, 0] = bos_token # Giữ BOS
+              x[:, 1:q_len] = q_text # Giữ Question Text (đã xử lý ở trên)
               x[:, q_len] = plan_token_id
               x[:, q_len + p_len] = exec_token_id
       
-      # 5. Final Step
+      # 5. Final
       t = timesteps[-1] * torch.ones(x.shape[0], 1, device=self.device)
       x = self._denoiser_update(x=x, t=t, block_indices=block_indices)
       
-      # Final clean-up
       if self.use_hdp_attention and question_tokens is not None:
-          x[:, :q_len] = question_tokens
+          x[:, 0] = bos_token
+          x[:, 1:q_len] = q_text
       
       stop, x = self._check_stop_conds(x)
       if stop:
