@@ -309,7 +309,7 @@ if __name__ == "__main__":
     
     # --- CẤU HÌNH ---
     # Thay đường dẫn này bằng đường dẫn tới file thật của bạn
-    REAL_DATA_PATH = 'data/gsm8k/gsm8k_hierarchical_test.json'
+    REAL_DATA_PATH = 'data/gsm8k/gsm8k_hierarchical_train.json'
     
     print(f"Testing HDP Dataset with real data at: {REAL_DATA_PATH}")
     
@@ -368,22 +368,18 @@ if __name__ == "__main__":
 
         print("\n" + "="*60)
         print(f"🔎 DETAILED STRUCTURE CHECK (Sample #{sample_idx})")
-        print("="*60)
         
-        print(f"\n🟦 [BLOCK 0: QUESTION] (Allocated: {len(q_tokens)} tokens)")
+        print(f"\n[BLOCK 0: QUESTION] (Allocated: {len(q_tokens)} tokens)")
         print(f"   Shape check: {q_tokens.shape}")
-        print("-" * 60)
-        print(decode_clean(q_tokens))
+        print("QUESTION DECODE:", decode_clean(q_tokens))
         
-        print(f"\n🟨 [BLOCK 1: PLAN] (Allocated: {len(p_tokens)} tokens)")
+        print(f"\n[BLOCK 1: PLAN] (Allocated: {len(p_tokens)} tokens)")
         print(f"   Shape check: {p_tokens.shape}")
-        print("-" * 60)
-        print(decode_clean(p_tokens))
+        print("PLAN DECODE:", decode_clean(p_tokens))
         
-        print(f"\n🟩 [BLOCK 2: EXECUTION] (Allocated: {len(e_tokens)} tokens)")
+        print(f"\n[BLOCK 2: EXECUTION] (Allocated: {len(e_tokens)} tokens)")
         print(f"   Shape check: {e_tokens.shape}")
-        print("-" * 60)
-        print(decode_clean(e_tokens))
+        print("EXECUTION DECODE:", decode_clean(e_tokens))
         
         print("\n" + "="*60 + "\n")
 
@@ -394,7 +390,7 @@ if __name__ == "__main__":
         
         # Kiểm tra thêm 1 mẫu nữa để chắc chắn (ví dụ mẫu số 1)
         if len(dataset) > 1:
-            debug_print_sample(1, dataset, tokenizer)
+            debug_print_sample(2, dataset, tokenizer)
 
     print("✅ Done verifying format.")
 

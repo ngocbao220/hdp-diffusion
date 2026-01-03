@@ -602,11 +602,11 @@ class Diffusion(L.LightningModule):
         print(f"GT  : {gt_tokens[0, :30].tolist()}")
         print(f"Pred: {pred_tokens[0, :30].tolist()}")
         
-        if hasattr(self, 'tokenizer'):
-          gt_text = self.tokenizer.decode(gt_tokens[0, :100], skip_special_tokens=False)
-          pred_text = self.tokenizer.decode(pred_tokens[0, :100], skip_special_tokens=False)
-          print(f"\nGround Truth: {gt_text[:200]}...")
-          print(f"Prediction  : {pred_text[:200]}...")
+        # if hasattr(self, 'tokenizer'):
+        #   gt_text = self.tokenizer.decode(gt_tokens[0, :100], skip_special_tokens=False)
+        #   pred_text = self.tokenizer.decode(pred_tokens[0, :100], skip_special_tokens=False)
+        #   print(f"\nGround Truth: {gt_text[:200]}...")
+        #   print(f"Prediction  : {pred_text[:200]}...")
         
         print("="*80 + "\n")
     
@@ -624,7 +624,6 @@ class Diffusion(L.LightningModule):
         
         # Sample t randomly (same as training!)
         # Training uses t ~ Uniform[sampling_eps_min, sampling_eps_max] = [0.001, 1.0]
-        # Average t ≈ 0.5, so we get realistic noise level matching training distribution
         t_random = self._sample_t(x0.shape, self.device, 
                                    sampling_eps_min=1e-3, 
                                    sampling_eps_max=1.0)
@@ -692,14 +691,11 @@ class Diffusion(L.LightningModule):
           num_content_tokens = 0
         
         print(f"Token-level accuracy: {accuracy*100:.2f}% (on {num_content_tokens} content tokens, excluding PAD)")
-        print(f"\nFirst 50 tokens comparison:")
-        print(f"Ground Truth: {gt_tokens[0, :50].tolist()}")
-        print(f"Prediction  : {pred_tokens[0, :50].tolist()}")
         
         # Decode to text
         if hasattr(self, 'tokenizer'):
-          gt_text = self.tokenizer.decode(gt_tokens[0, :50])
-          pred_text = self.tokenizer.decode(pred_tokens[0, :50])
+          gt_text = self.tokenizer.decode(gt_tokens[128, :256])
+          pred_text = self.tokenizer.decode(pred_tokens[128, :256])
           print(f"\nGround Truth Text: {gt_text}")
           print(f"Prediction Text  : {pred_text}") 
         
@@ -1320,7 +1316,6 @@ class Diffusion(L.LightningModule):
     
     return x_out
 
-
   def _denoiser_update(self, x, t, block_indices=None):
     """
     Final denoising step: Simplified version + Safety + Anchoring.
@@ -1365,6 +1360,7 @@ class Diffusion(L.LightningModule):
     # =================================================================
     
     return samples
+  
   def _sample_t(
       self, batch_dims, device, sampling_eps_min, sampling_eps_max, block_size=None):
     if block_size is None:
