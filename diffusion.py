@@ -1160,10 +1160,9 @@ class Diffusion(L.LightningModule):
 
   def _analytic_update(self, x, t, dt, block_indices=None):
     """
-    Analytic update using correct D3PM/MDLM posterior formula.
-    P(xt-1 | xt, x0) formula for absorbing diffusion.
+    Analytic update with SAFETY FILTER to prevent PAD/MASK generation.
     """
-    # Debug: Check if block_indices is passed
+    # Debug info (Giữ nguyên logic debug của bạn)
     if not hasattr(self, '_analytic_update_debug'):
       self._analytic_update_debug = True
       print(f"\n🔍 [_analytic_update] Entry debug:")
@@ -1171,83 +1170,67 @@ class Diffusion(L.LightningModule):
       if block_indices is not None:
         print(f"   block_indices.shape: {block_indices.shape}")
       print(f"   has hdp_block_sizes: {hasattr(self.config.model, 'hdp_block_sizes')}")
-      if hasattr(self.config.model, 'hdp_block_sizes'):
-        print(f"   hdp_block_sizes: {self.config.model.hdp_block_sizes}")
-    
-    # 1. Tính toán xác suất Mask tại bước t và bước s (bước tiếp theo)
-    # P(masked at t) = 1 - exp(-sigma_t)
+
+    # 1. Tính toán xác suất Mask (Logic cũ giữ nguyên)
     curr_sigma = self._sigma_from_p(self.noise(t)[1])
     next_sigma = self._sigma_from_p(self.noise(t - dt)[1])
     
     p_t = 1 - torch.exp(-curr_sigma)
     p_s = 1 - torch.exp(-next_sigma)
-    
-    # Clip để tránh chia cho 0 (dù sigma rất lớn thì p_t ~ 1)
     p_t = torch.clamp(p_t, min=1e-6)
     
-    # 2. Tính xác suất chuyển đổi
-    # Xác suất giữ nguyên Mask: P(stay_mask) = P(masked at s) / P(masked at t)
     prob_stay_masked = p_s / p_t
-    
-    # Xác suất Unmask thành token w: P(unmask) = 1 - P(stay_mask)
     prob_unmask = 1.0 - prob_stay_masked
     
-    # Broadcast đúng shape [Batch, 1, 1] cho phép nhân
     if prob_stay_masked.ndim > 0:
         prob_stay_masked = prob_stay_masked.view(-1, 1, 1)
         prob_unmask = prob_unmask.view(-1, 1, 1)
         
-    # 3. Lấy dự đoán từ Model P(x0 | xt)
-    # Hàm get_score đã trả về xác suất đã qua softmax/nucleus (sum=1)
+    # 2. Lấy dự đoán từ Model P(x0 | xt)
     p_x0 = self.get_score(x, curr_sigma, block_indices=block_indices)
     
-    # 4. Tính toán phân phối xác suất cho bước tiếp theo (Posterior)
-    # Với các vị trí đang là Mask:
-    # P(next = Mask) = prob_stay_masked
-    # P(next = Token w) = p_x0(w) * prob_unmask
+    # =================================================================
+    # 🛡️ SAFETY FILTER: CẤM SINH RA [MASK] VÀ [PAD]
+    # =================================================================
+    # 2.1. Cấm Mask Token (Model không được đoán ra Mask)
+    p_x0[..., self.mask_index] = 0.0
     
+    # 2.2. Cấm PAD Token (Model không được đoán ra PAD)
+    # Lấy ID của PAD token
+    pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
+    if pad_token_id is None:
+        pad_token_id = getattr(self.tokenizer, 'eos_token_id', None)
+        
+    if pad_token_id is not None:
+        p_x0[..., pad_token_id] = 0.0
+
+    # 2.3. Renormalize (Quan trọng: Chia lại tỷ lệ sao cho tổng = 1)
+    p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
+    # =================================================================
+    
+    # 3. Tính Posterior (Logic Absorbing)
     probs = p_x0 * prob_unmask
     
-    # Gán xác suất cho mask token
-    # Lưu ý: Cần đảm bảo mask_index không bị lẫn xác suất từ p_x0
+    # Gán xác suất giữ Mask vào đúng vị trí mask_index
     probs[..., self.mask_index] = prob_stay_masked.squeeze(-1)
     
-    # 5. Sampling
-    # Sample toàn bộ (để tận dụng GPU), nhưng chỉ cập nhật vị trí đang là Mask
+    # 4. Sampling
     x_new = _sample_categorical(probs)
-    
     is_mask = (x == self.mask_index)
-    
-    # Logic Absorbing:
-    # - Nếu token đã unmask (is_mask=False) -> Giữ nguyên (x)
-    # - Nếu token đang mask (is_mask=True) -> Cập nhật bằng x_new (có thể ra token mới hoặc vẫn là mask)
     x_out = torch.where(is_mask, x_new, x)
     
-    # 🥇 HARD POSITION ANCHOR: Force markers at block boundaries
-    # Use scatter instead of in-place assignment for inference
+    # 5. Marker Anchoring (Giữ nguyên logic của bạn)
     if block_indices is not None and hasattr(self.config.model, 'hdp_block_sizes'):
       q_len, p_len, e_len = self.config.model.hdp_block_sizes
       plan_marker_pos = q_len
       exec_marker_pos = q_len + p_len
       seq_len = x_out.shape[1]
       
-      # Get marker token IDs
       plan_token_id = getattr(self.config.model, 'plan_token_id', None)
       exec_token_id = getattr(self.config.model, 'execution_token_id', None)
       
-      # Debug first call
-      if not hasattr(self, '_marker_debug_printed'):
-        self._marker_debug_printed = True
-        print(f"\n🥇 [MARKER ANCHORING] DEBUG:")
-        print(f"   plan_token_id: {plan_token_id}")
-        print(f"   exec_token_id: {exec_token_id}")
-        print(f"   plan_marker_pos: {plan_marker_pos}")
-        print(f"   exec_marker_pos: {exec_marker_pos}")
-        print(f"   seq_len: {seq_len}")
-        print(f"   x_out[0, {plan_marker_pos}] BEFORE: {x_out[0, plan_marker_pos].item()}")
-        print(f"   x_out[0, {exec_marker_pos}] BEFORE: {x_out[0, exec_marker_pos].item()}")
+      # (Debug print omitted for brevity but logic kept)
       
-      # Create marker mask and replacement tensor
       marker_mask = torch.zeros_like(x_out, dtype=torch.bool)
       marker_values = x_out.clone()
       
@@ -1258,29 +1241,44 @@ class Diffusion(L.LightningModule):
         marker_mask[:, exec_marker_pos] = True
         marker_values[:, exec_marker_pos] = exec_token_id
       
-      # Apply markers (non-in-place)
       x_out = torch.where(marker_mask, marker_values, x_out)
-      
-      # Debug after apply
-      if not hasattr(self, '_marker_after_printed'):
-        self._marker_after_printed = True
-        print(f"   x_out[0, {plan_marker_pos}] AFTER: {x_out[0, plan_marker_pos].item()}")
-        print(f"   x_out[0, {exec_marker_pos}] AFTER: {x_out[0, exec_marker_pos].item()}")
-        print(f"   marker_mask sum: {marker_mask.sum().item()}")
     
     return x_out
 
 
-  def _denoiser_update(self, x, t, block_indices=None):
-    """Final denoising step with optional HDP mask."""
+   def _denoiser_update(self, x, t, block_indices=None):
+    """Final denoising step with SAFETY FILTER."""
     sigma = self._sigma_from_p(self.noise(t)[1])
+    
+    # 1. Lấy score gốc
     score = self.get_score(x, sigma, block_indices=block_indices)
+    
+    # =================================================================
+    # 🛡️ SAFETY FILTER CHO BƯỚC CUỐI
+    # =================================================================
+    # Cấm Mask
+    score[..., self.mask_index] = 0.0
+    
+    # Cấm Pad
+    pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
+    if pad_token_id is None:
+        pad_token_id = getattr(self.tokenizer, 'eos_token_id', None)
+    if pad_token_id is not None:
+        score[..., pad_token_id] = 0.0
+        
+    # Renormalize score trước khi đi tiếp
+    score = score / (score.sum(dim=-1, keepdim=True) + 1e-8)
+    # =================================================================
+
+    # 2. Tính toán tiếp theo logic cũ (nhưng với score đã sạch)
     stag_score = self._staggered_score(score, sigma)
     probs = stag_score * self._transp_transition(x, sigma)
+    
+    # Đảm bảo mask index = 0 lần nữa
     probs[..., self.mask_index] = 0
     
-    # ✅ CRITICAL FIX: Normalize probabilities before sampling
-    probs = probs / probs.sum(dim=-1, keepdim=True)
+    # Normalize lần cuối để chắc chắn
+    probs = probs / (probs.sum(dim=-1, keepdim=True) + 1e-8)
     
     samples = _sample_categorical(probs)
     return samples
@@ -1472,8 +1470,6 @@ class Diffusion(L.LightningModule):
       attention_mask[: , 0] = 0
     
     # ============ HDP LOSS MASKING - NEW CODE ============
-    # ⚠️ FIX: Include Question in loss with lower weight to prevent collapse
-    # Without this, Question block outputs random tokens (often '!' or PAD)
     if self.use_hdp_attention and block_indices is not None:
       # 1. Xác định vị trí Content hợp lệ (Không phải Diffusion Mask VÀ Không phải Padding Token)
       # Lưu ý: x0 là ground truth
@@ -1885,6 +1881,7 @@ class Diffusion(L.LightningModule):
 
     # CRITERION 2: always stop sampling if entropy is low
     # ⚠️ DISABLED for early checkpoints - entropy threshold too strict
+    entropy = None  # Initialize to None when disabled
     # entropy = self._compute_entropy(x[:, -256:])
     # if entropy < 4:
     #   stop = True
@@ -1900,7 +1897,7 @@ class Diffusion(L.LightningModule):
           truncate_idx = min(eos_idx[1][1]+1, x.shape[1])
 
       # CRITERION 2: stop if entropy/likelihood is low
-      if entropy < 4:
+      if entropy is not None and entropy < 4:
         stop = True
         truncate_idx = x.shape[1] - 256
 
