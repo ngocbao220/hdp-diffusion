@@ -1756,6 +1756,15 @@ class Diffusion(L.LightningModule):
       # Track x0_pred for cross_attn (match training [xt, x0])
       x0_pred = None
       
+      # 🔍 DEBUG: Check Question block content before sampling
+      print(f"\n🔍 [_analytic_sampler] Question block content:")
+      print(f"   x[0, :10] = {x[0, :10].tolist()}")
+      print(f"   x[0, 120:130] = {x[0, 120:130].tolist()}")
+      if question_tokens is not None:
+          print(f"   question_tokens[0, :10] = {question_tokens[0, :10].tolist()}")
+          q_decoded = self.tokenizer.decode(x[0, :q_len])
+          print(f"   Decoded Question: {q_decoded[:200]}...")
+      
       for i in tqdm(range(num_steps), desc='HDP Sampling'):
           t = timesteps[i] * torch.ones(x.shape[0], 1, device=self.device)
           
