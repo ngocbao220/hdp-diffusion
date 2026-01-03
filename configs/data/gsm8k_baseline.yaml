@@ -6,8 +6,8 @@ train: gsm8k_baseline
 valid: gsm8k_baseline
 
 # Data paths - baseline format
-train_path: data/gsm8k/gsm8k_baseline.json
-test_path: data/gsm8k/gsm8k_baseline.json
+train_path: /content/hdp-diffusion/data/gsm8k/gsm8k_baseline.json
+test_path: /content/hdp-diffusion/data/gsm8k/gsm8k_baseline.json
 
 # Tokenizer
 tokenizer_name_or_path: gpt2

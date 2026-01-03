@@ -397,3 +397,63 @@ if __name__ == "__main__":
             debug_print_sample(1, dataset, tokenizer)
 
     print("✅ Done verifying format.")
+
+
+class SimpleGSM8KDataset(Dataset):
+    """
+    Simple dataset for GSM8K baseline format (Q&A only, no HDP structure).
+    Loads from JSON with {"question": "...", "answer": "..."} format.
+    """
+    
+    def __init__(
+        self,
+        data_path: str,
+        tokenizer: PreTrainedTokenizer,
+        max_length: int = 512,
+        add_special_tokens: bool = True
+    ):
+        """
+        Args:
+            data_path: Path to JSON file with {"question", "answer"}
+            tokenizer: Hugging Face tokenizer
+            max_length: Maximum sequence length
+            add_special_tokens: Whether to add BOS/EOS tokens
+        """
+        self.data_path = data_path
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.add_special_tokens = add_special_tokens
+        
+        # Load data
+        with open(data_path, 'r', encoding='utf-8') as f:
+            self.data = json.load(f)
+        
+        logger.info(f"Loaded {len(self.data)} samples from {data_path}")
+    
+    def __len__(self) -> int:
+        return len(self.data)
+    
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """
+        Returns:
+            Dictionary with 'input_ids' and 'attention_mask'
+        """
+        item = self.data[idx]
+        
+        # Format: "Question: ... Answer: ..."
+        text = f"Question: {item['question']}\nAnswer: {item['answer']}"
+        
+        # Tokenize
+        encoded = self.tokenizer(
+            text,
+            max_length=self.max_length,
+            padding='max_length',
+            truncation=True,
+            add_special_tokens=self.add_special_tokens,
+            return_tensors='pt'
+        )
+        
+        return {
+            'input_ids': encoded['input_ids'].squeeze(0),
+            'attention_mask': encoded['attention_mask'].squeeze(0)
+        }
