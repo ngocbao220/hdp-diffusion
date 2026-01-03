@@ -634,9 +634,9 @@ class Diffusion(L.LightningModule):
           # Generate sample
           with torch.no_grad():
             samples = self._sample(
-              num_samples=1,
-              seq_len=input_ids.shape[1],
-              block_indices=block_indices,
+              seqlen=input_ids.shape[1],
+              num_steps=100,  # Quick sampling for validation
+              batch_size_per_gpu=1,
               question_tokens=None
             )
           
