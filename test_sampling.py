@@ -17,7 +17,14 @@ def test_sampling_fix(config):
     from diffusion import Diffusion
     import transformers
     
-    tokenizer = transformers.AutoTokenizer.from_pretrained(config.model.tokenizer)
+    # Get tokenizer path from data config
+    tokenizer_path = getattr(config.data, 'tokenizer_name_or_path', 'gpt2')
+    tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_path)
+    
+    # Add padding token if not present
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
     model = Diffusion(config, tokenizer).cuda()
     model.eval()
     
