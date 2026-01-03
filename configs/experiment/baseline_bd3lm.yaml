@@ -15,18 +15,6 @@ experiment_name: baseline_bd3lm
 algo:
   sampler: semi_ar # Standard BD3-LM semi-autoregressive sampler
 
-# NO HDP - use standard data format
-data:
-  # Standard GSM8K format (no HDP structure)
-  train_path: data/gsm8k/gsm8k_overfit.json
-  test_path: data/gsm8k/gsm8k_overfit.json
-
-  # Disable HDP
-  hdp:
-    enabled: false # No hierarchical structure
-    use_hdp_attention: false # No special attention mask
-    use_special_format: false # No [PLAN]/[EXECUTION] tokens
-
 # Model configuration
 model:
   length: 512 # Standard sequence length
