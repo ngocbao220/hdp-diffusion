@@ -569,6 +569,36 @@ class Diffusion(L.LightningModule):
         # Add noise (same distribution as training)
         xt_random = self.q_xt(x0, p_random, sampling_eps_min=1e-3, sampling_eps_max=1.0)
         
+        # ✅ CRITICAL: Keep Question block CLEAN (same as training!)
+        # Question is input, should NOT be masked
+        if block_indices is not None:
+          # Handle both 1D [seq_len] and 2D [batch, seq_len] block_indices
+          if block_indices.ndim == 1:
+            question_mask = (block_indices == 0).unsqueeze(0).expand_as(x0)
+          else:
+            question_mask = (block_indices == 0)
+          # Restore Question tokens to clean (no masking)
+          xt_random = torch.where(question_mask, x0, xt_random)
+        
+        # 🔍 DEBUG: Log noise level and masking statistics
+        avg_t = t_random.mean().item()
+        num_masked = (xt_random == self.mask_index).sum().item()
+        total_tokens = xt_random.numel()
+        print(f"🔍 Accuracy check noise level:")
+        print(f"   Average t: {avg_t:.3f}")
+        print(f"   Masked tokens: {num_masked}/{total_tokens} ({num_masked/total_tokens*100:.1f}%)")
+        if block_indices is not None:
+          for block_id in range(3):
+            if block_indices.ndim == 1:
+              block_mask_indices = (block_indices == block_id)
+              block_tokens = xt_random[:, block_mask_indices]
+            else:
+              block_mask_indices = (block_indices == block_id)
+              block_tokens = xt_random[block_mask_indices]
+            num_masked_block = (block_tokens == self.mask_index).sum().item()
+            total_block = block_tokens.numel()
+            print(f"   Block {block_id}: {num_masked_block}/{total_block} masked ({num_masked_block/total_block*100:.1f}%)")
+        
         # Compute sigma from p
         sigma_random = self._sigma_from_p(p_random[:, 0].unsqueeze(-1))
         
