@@ -387,7 +387,6 @@ if __name__ == "__main__":
         print("\n" + "="*60 + "\n")
 
     print(f"Tokenizer size: {len(tokenizer)}")
-    print(f"SPECIAL TOKENS: <|pad|> {tokenizer.pad_token_id}, <|plan|> {tokenizer.additional_special_tokens_ids[0]}, <|execution|> {tokenizer.additional_special_tokens_ids[1]}, <|answer|> {tokenizer.additional_special_tokens_ids[2]}")
     # 5. Thực hiện in kiểm tra mẫu đầu tiên
     print("Dataset size:", len(dataset))
     if len(dataset) > 0:
