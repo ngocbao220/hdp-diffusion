@@ -371,17 +371,17 @@ if __name__ == "__main__":
         
         print(f"\n[BLOCK 0: QUESTION] (Allocated: {len(q_tokens)} tokens)")
         print(f"   Shape check: {q_tokens.shape}")
-        print(f"QUESTION TOKENS:", q_tokens.tolist())
+        print(f"QUESTION TOKENS:", q_tokens[q_tokens != pad_id].tolist())
         print("QUESTION DECODE:", decode_clean(q_tokens))
         
         print(f"\n[BLOCK 1: PLAN] (Allocated: {len(p_tokens)} tokens)")
         print(f"   Shape check: {p_tokens.shape}")
-        print("PLAN TOKENS:", p_tokens.tolist())
+        print("PLAN TOKENS:", p_tokens[p_tokens != pad_id].tolist())
         print("PLAN DECODE:", decode_clean(p_tokens))
         
         print(f"\n[BLOCK 2: EXECUTION] (Allocated: {len(e_tokens)} tokens)")
         print(f"   Shape check: {e_tokens.shape}")
-        print("EXECUTION TOKENS:", e_tokens.tolist())
+        print("EXECUTION TOKENS:", e_tokens[e_tokens != pad_id].tolist())
         print("EXECUTION DECODE:", decode_clean(e_tokens))
         
         print("\n" + "="*60 + "\n")
