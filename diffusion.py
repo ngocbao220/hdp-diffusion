@@ -1872,6 +1872,12 @@ class Diffusion(L.LightningModule):
     # 4. Adaptive decoding based on sampling_mode
     sampling_mode = getattr(self.config.sampling, 'sampling_mode', 'hdp')
     
+    # Get HDP structure info if available
+    is_hdp = self.use_hdp_attention
+    q_len = 0
+    if is_hdp and hasattr(self, 'hdp_block_sizes') and self.hdp_block_sizes is not None:
+        q_len, _, _ = self.hdp_block_sizes
+    
     if sampling_mode == 'bd3lm':
         # BD3-LM: Categorical sampling (baseline)
         model_output = torch.clamp(model_output, min=-30.0, max=30.0)
@@ -1886,6 +1892,10 @@ class Diffusion(L.LightningModule):
         # Renormalize and sample
         p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
         samples = _sample_categorical(p_x0)
+        
+        # HDP: Don't regenerate question tokens (keep original)
+        if is_hdp and q_len > 0:
+            samples[:, :q_len] = x[:, :q_len]
         
     elif sampling_mode == 'hdp':
         model_output = torch.clamp(model_output, min=-30.0, max=30.0)
@@ -1913,6 +1923,10 @@ class Diffusion(L.LightningModule):
         # Renormalize and sample
         p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
         samples = _sample_categorical(p_x0)
+        
+        # HDP: Don't regenerate question tokens (keep original)
+        if is_hdp and q_len > 0:
+            samples[:, :q_len] = x[:, :q_len]
         
     elif sampling_mode == 'hdp_oracle':
         # HDP Oracle: Argmax + confidence gate (ablation)
@@ -1947,6 +1961,10 @@ class Diffusion(L.LightningModule):
         sampled = _sample_categorical(p_x0)
         
         samples = torch.where(high_conf, greedy_samples, sampled)
+        
+        # HDP: Don't regenerate question tokens (keep original)
+        if is_hdp and q_len > 0:
+            samples[:, :q_len] = x[:, :q_len]
         
     else:
         raise ValueError(f"Unknown sampling_mode: {sampling_mode}")

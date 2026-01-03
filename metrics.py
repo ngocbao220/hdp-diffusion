@@ -8,6 +8,7 @@ import os
 import torch.nn.functional as F
 from tqdm import tqdm
 import math
+import re
 
 LOG2 = torch.log(torch.tensor(2.0))
 
@@ -230,3 +231,80 @@ class Metrics:
 
       # record sample length
       self.gen_lengths.append(valid_tokens_accum.sum().detach().cpu().item())
+
+  def extract_answer(self, text):
+    """Extract numerical answer from generated text for GSM8K evaluation.
+    
+    Args:
+        text: Generated text containing the answer
+        
+    Returns:
+        float or None: Extracted answer number, or None if not found
+    """
+    # Remove special tokens
+    text = text.replace('<|plan|>', '').replace('<|execution|>', '').replace('<|answer|>', '')
+    
+    # Try to find "#### NUMBER" pattern (GSM8K format)
+    match = re.search(r'####\s*([+-]?\d+(?:,\d{3})*(?:\.\d+)?)', text)
+    if match:
+      answer_str = match.group(1).replace(',', '')
+      try:
+        return float(answer_str)
+      except ValueError:
+        pass
+    
+    # Fallback: find last number in text
+    numbers = re.findall(r'([+-]?\d+(?:,\d{3})*(?:\.\d+)?)', text)
+    if numbers:
+      answer_str = numbers[-1].replace(',', '')
+      try:
+        return float(answer_str)
+      except ValueError:
+        pass
+    
+    return None
+  
+  def compute_gsm8k_accuracy(self, generated_texts, ground_truth_texts):
+    """Compute accuracy for GSM8K math problems.
+    
+    Args:
+        generated_texts: List of generated text samples
+        ground_truth_texts: List of ground truth text samples
+        
+    Returns:
+        dict: Dictionary containing accuracy metrics
+    """
+    results = {
+      'total': 0,
+      'correct': 0,
+      'accuracy': 0.0,
+      'details': []
+    }
+    
+    for gen_text, gt_text in zip(generated_texts, ground_truth_texts):
+      results['total'] += 1
+      
+      # Extract answers
+      gen_answer = self.extract_answer(gen_text)
+      gt_answer = self.extract_answer(gt_text)
+      
+      # Compare
+      is_correct = False
+      if gen_answer is not None and gt_answer is not None:
+        # Allow small floating point tolerance
+        is_correct = abs(gen_answer - gt_answer) < 1e-4
+        if is_correct:
+          results['correct'] += 1
+      
+      results['details'].append({
+        'generated_text': gen_text,
+        'ground_truth_text': gt_text,
+        'generated_answer': gen_answer,
+        'ground_truth_answer': gt_answer,
+        'correct': is_correct
+      })
+    
+    if results['total'] > 0:
+      results['accuracy'] = results['correct'] / results['total']
+    
+    return results
