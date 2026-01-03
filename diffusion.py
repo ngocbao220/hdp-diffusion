@@ -610,7 +610,7 @@ class Diffusion(L.LightningModule):
               on_epoch=True, sync_dist=True)
     
     # Generate sample during validation to check quality
-    if not self.trainer.sanity_checking:
+    if not self.trainer.sanity_checking and self.T > 0:  # Check T is valid
       try:
         print(f"\n{'='*80}")
         print(f"🔍 VALIDATION SAMPLE (Epoch {self.current_epoch})")
