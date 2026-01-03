@@ -608,6 +608,51 @@ class Diffusion(L.LightningModule):
     for k, v in self.metrics.valid_nlls.items():
       self.log(name=k,  value=v.compute(), on_step=False,
               on_epoch=True, sync_dist=True)
+    
+    # Generate sample during validation to check quality
+    if not self.trainer.sanity_checking and self.current_epoch % 5 == 0:  # Every 5 epochs
+      try:
+        print(f"\n{'='*80}")
+        print(f"🔍 VALIDATION SAMPLE (Epoch {self.current_epoch})")
+        print(f"{'='*80}")
+        
+        # Get one validation batch
+        val_dataloader = self.trainer.val_dataloaders
+        if val_dataloader is not None:
+          batch = next(iter(val_dataloader))
+          
+          # Move to device
+          if isinstance(batch, dict):
+            input_ids = batch['input_ids'][:1].to(self.device)  # Take first sample
+            block_indices = batch.get('block_indices', None)
+            if block_indices is not None:
+              block_indices = block_indices[:1].to(self.device)
+          else:
+            input_ids = batch[:1].to(self.device)
+            block_indices = None
+          
+          # Generate sample
+          with torch.no_grad():
+            samples = self._sample(
+              num_samples=1,
+              seq_len=input_ids.shape[1],
+              block_indices=block_indices,
+              question_tokens=None
+            )
+          
+          # Decode
+          tokenizer = val_dataloader.tokenizer
+          generated = tokenizer.decode(samples[0], skip_special_tokens=False)
+          ground_truth = tokenizer.decode(input_ids[0], skip_special_tokens=False)
+          
+          print(f"\n📝 GROUND TRUTH:")
+          print(f"   {ground_truth[:200]}...")
+          print(f"\n🤖 GENERATED:")
+          print(f"   {generated[:200]}...")
+          print(f"\n{'='*80}\n")
+      except Exception as e:
+        print(f"⚠️  Failed to generate validation sample: {e}")
+    
     if self.ema:
       self.ema.restore(self._get_parameters())
     if self.var_min and not self.trainer.sanity_checking:
