@@ -1265,14 +1265,15 @@ class Diffusion(L.LightningModule):
 
   def _analytic_update(self, x, t, dt, block_indices=None, x0_pred=None):
       """
-      Analytic update for DISCRETE DIFFUSION with HDP structure.
-
-      Principles:
-      - Diffusion unmasking is STOCHASTIC (prob_unmask)
-      - Content is gated by CONFIDENCE = logit margin (top1 - top2)
-      - No content at high sigma
-      - Markers are STRUCTURAL (never predicted)
+      Analytic update for DISCRETE DIFFUSION.
+      
+      Sampling modes:
+        - bd3lm: categorical sampling (baseline, no confidence gate)
+        - hdp: categorical sampling + HDP structure (fair comparison)
+        - hdp_oracle: argmax + confidence gate + HDP structure (ablation)
       """
+      
+      sampling_mode = getattr(self.config.sampling, 'sampling_mode', 'hdp')
 
       # ================================================================
       # 1. Noise schedule → unmask probability
@@ -1289,8 +1290,6 @@ class Diffusion(L.LightningModule):
 
       if prob_unmask.ndim > 0:
           prob_unmask = prob_unmask.view(-1, 1)
-
-      avg_sigma = curr_sigma.mean().item()
 
       # ================================================================
       # 2. Forward pass (MATCH TRAINING!)
@@ -1309,57 +1308,78 @@ class Diffusion(L.LightningModule):
       )
 
       # ================================================================
-      # 3. HARD BAN structural + special tokens
+      # 3. Safety filters (ONLY for HDP modes)
       # ================================================================
-      plan_id   = getattr(self.config.model, "plan_token_id", 50258)
-      exec_id   = getattr(self.config.model, "execution_token_id", 50259)
-      answer_id = getattr(self.config.model, "answer_token_id", 50260)
-      pad_id    = getattr(self.tokenizer, "pad_token_id", 50257)
+      if sampling_mode in ['hdp', 'hdp_oracle']:
+          plan_id   = getattr(self.config.model, "plan_token_id", 50258)
+          exec_id   = getattr(self.config.model, "execution_token_id", 50259)
+          answer_id = getattr(self.config.model, "answer_token_id", 50260)
+          pad_id    = getattr(self.tokenizer, "pad_token_id", 50257)
 
-      logits[..., plan_id]   = self.neg_infinity
-      logits[..., exec_id]   = self.neg_infinity
-      logits[..., answer_id] = self.neg_infinity
-      logits[..., pad_id]    = self.neg_infinity
-
-      # ================================================================
-      # 4. Predict x0 (ARGMAX – correct for reasoning)
-      # ================================================================
-      pred_tokens = logits.argmax(dim=-1)
+          logits[..., plan_id]   = self.neg_infinity
+          logits[..., exec_id]   = self.neg_infinity
+          logits[..., answer_id] = self.neg_infinity
+          logits[..., pad_id]    = self.neg_infinity
 
       # ================================================================
-      # 5. CONFIDENCE = LOGIT MARGIN (CRITICAL FIX)
+      # 4. Predict x0 based on sampling_mode
       # ================================================================
-      top2, _ = logits.topk(2, dim=-1)
-      logit_margin = top2[..., 0] - top2[..., 1]
-
-      # Sigma-aware threshold schedule
-      if avg_sigma > 3.0:
-          conf_threshold = 0.6
-      elif avg_sigma > 2.0:
-          conf_threshold = 0.3
+      if sampling_mode == 'bd3lm':
+          # BD3-LM: Categorical sampling (original)
+          p_x0 = logits.to(torch.float64).exp()
+          pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
+          p_x0[..., self.mask_index] = 0.0
+          if pad_token_id is not None:
+              p_x0[..., pad_token_id] = 0.0
+          p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
+          pred_tokens = _sample_categorical(p_x0)
+          
+          # BD3-LM: No confidence gate
+          should_unmask = torch.rand_like(x.float()) < prob_unmask
+          
+      elif sampling_mode == 'hdp':
+          # HDP: Categorical sampling (fair comparison)
+          p_x0 = logits.to(torch.float64).exp()
+          p_x0[..., self.mask_index] = 0.0
+          p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
+          pred_tokens = _sample_categorical(p_x0)
+          
+          # HDP: No confidence gate (fair with BD3-LM)
+          should_unmask = torch.rand_like(x.float()) < prob_unmask
+          
+      elif sampling_mode == 'hdp_oracle':
+          # HDP-Oracle: Argmax + confidence gate (ablation)
+          pred_tokens = logits.argmax(dim=-1)
+          
+          # Confidence gate
+          top2, _ = logits.topk(2, dim=-1)
+          logit_margin = top2[..., 0] - top2[..., 1]
+          avg_sigma = curr_sigma.mean().item()
+          
+          if avg_sigma > 3.0:
+              conf_threshold = 0.6
+          elif avg_sigma > 2.0:
+              conf_threshold = 0.3
+          else:
+              conf_threshold = 0.15
+          
+          can_unmask = logit_margin > conf_threshold
+          
+          # Early step hard block
+          SIGMA_CONTENT_START = 3.5
+          if avg_sigma > SIGMA_CONTENT_START:
+              should_unmask = torch.zeros_like(x, dtype=torch.bool)
+          else:
+              anneal = max(0.05, min(1.0, 1.0 - avg_sigma / SIGMA_CONTENT_START))
+              rand_unmask = torch.rand_like(x.float()) < (prob_unmask * anneal)
+              should_unmask = rand_unmask & can_unmask
       else:
-          conf_threshold = 0.15
-
-      can_unmask = logit_margin > conf_threshold
+          raise ValueError(f"Unknown sampling_mode: {sampling_mode}")
 
       # ================================================================
-      # 6. EARLY STEP HARD BLOCK (NO CONTENT)
+      # 5. HDP STRUCTURE ENFORCEMENT (hdp and hdp_oracle only)
       # ================================================================
-      SIGMA_CONTENT_START = 3.5
-
-      if avg_sigma > SIGMA_CONTENT_START:
-          should_unmask = torch.zeros_like(x, dtype=torch.bool)
-      else:
-          # Anneal unmask probability by sigma (scalar computation)
-          anneal = max(0.05, min(1.0, 1.0 - avg_sigma / SIGMA_CONTENT_START))
-
-          rand_unmask = torch.rand_like(x.float()) < (prob_unmask * anneal)
-          should_unmask = rand_unmask & can_unmask
-
-      # ================================================================
-      # 7. HDP STRUCTURE ENFORCEMENT
-      # ================================================================
-      if self.use_hdp_attention and self.hdp_block_sizes is not None:
+      if sampling_mode in ['hdp', 'hdp_oracle'] and self.use_hdp_attention and self.hdp_block_sizes is not None:
           q_len, p_len, e_len = self.hdp_block_sizes
 
           # Question block: NEVER unmask (already clean)
@@ -1375,16 +1395,18 @@ class Diffusion(L.LightningModule):
           should_unmask &= ~marker_pos
 
       # ================================================================
-      # 8. Apply update
+      # 6. Apply update
       # ================================================================
       is_mask = (x == self.mask_index)
       x_out = torch.where(is_mask & should_unmask, pred_tokens, x)
 
       # ================================================================
-      # 9. FORCE HDP MARKERS (ABSOLUTE)
+      # 7. FORCE HDP MARKERS (hdp and hdp_oracle only)
       # ================================================================
-      if self.use_hdp_attention and self.hdp_block_sizes is not None:
+      if sampling_mode in ['hdp', 'hdp_oracle'] and self.use_hdp_attention and self.hdp_block_sizes is not None:
           q_len, p_len, _ = self.hdp_block_sizes
+          plan_id = getattr(self.config.model, "plan_token_id", 50258)
+          exec_id = getattr(self.config.model, "execution_token_id", 50259)
 
           x_out[:, :q_len] = x[:, :q_len]  # freeze question
 
@@ -1400,9 +1422,10 @@ class Diffusion(L.LightningModule):
     """
     Final denoising step with adaptive decoding strategy.
     
-    Strategy:
-      - Greedy (default): argmax - for correctness
-      - Sampling: categorical - for diversity
+    Sampling modes:
+      - bd3lm: categorical sampling (baseline)
+      - hdp: categorical sampling + HDP structure (fair comparison)
+      - hdp_oracle: argmax + confidence gate (ablation)
     """
     # 1. Get noise level
     sigma = self._sigma_from_p(self.noise(t)[1])
@@ -1416,14 +1439,11 @@ class Diffusion(L.LightningModule):
     
     model_output = self.forward(x_input, sigma, sample_mode=True, block_indices=block_indices)
     
-    # 3. Adaptive decoding
-    use_greedy = getattr(self.config.sampling, 'use_greedy_decoding', True)  # Default: greedy
+    # 3. Adaptive decoding based on sampling_mode
+    sampling_mode = getattr(self.config.sampling, 'sampling_mode', 'hdp')  # Default: hdp
     
-    if use_greedy:
-        # GREEDY: argmax (same as training)
-        samples = model_output.argmax(dim=-1)
-    else:
-        # SAMPLING: categorical (BD3-LM original)
+    if sampling_mode == 'bd3lm':
+        # BD3-LM: Categorical sampling (baseline)
         p_x0 = model_output.to(torch.float64).exp()
         
         # Safety filters
@@ -1435,11 +1455,69 @@ class Diffusion(L.LightningModule):
         # Renormalize and sample
         p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
         samples = _sample_categorical(p_x0)
+        
+    elif sampling_mode == 'hdp':
+        # HDP: Categorical sampling (fair comparison with BD3-LM)
+        p_x0 = model_output.to(torch.float64).exp()
+        
+        # Safety filters (for HDP)
+        pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
+        plan_id = getattr(self.config.model, "plan_token_id", 50258)
+        exec_id = getattr(self.config.model, "execution_token_id", 50259)
+        answer_id = getattr(self.config.model, "answer_token_id", 50260)
+        
+        p_x0[..., self.mask_index] = 0.0
+        p_x0[..., plan_id] = 0.0
+        p_x0[..., exec_id] = 0.0
+        p_x0[..., answer_id] = 0.0
+        if pad_token_id is not None:
+            p_x0[..., pad_token_id] = 0.0
+        
+        # Renormalize and sample
+        p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
+        samples = _sample_categorical(p_x0)
+        
+    elif sampling_mode == 'hdp_oracle':
+        # HDP Oracle: Argmax + confidence gate (ablation)
+        logits = model_output
+        
+        # Safety filters
+        pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
+        plan_id = getattr(self.config.model, "plan_token_id", 50258)
+        exec_id = getattr(self.config.model, "execution_token_id", 50259)
+        answer_id = getattr(self.config.model, "answer_token_id", 50260)
+        
+        logits[..., self.mask_index] = self.neg_infinity
+        logits[..., plan_id] = self.neg_infinity
+        logits[..., exec_id] = self.neg_infinity
+        logits[..., answer_id] = self.neg_infinity
+        if pad_token_id is not None:
+            logits[..., pad_token_id] = self.neg_infinity
+        
+        # Get top-2 for confidence
+        top2, _ = logits.topk(2, dim=-1)
+        logit_margin = top2[..., 0] - top2[..., 1]
+        
+        # Confidence threshold
+        conf_threshold = 0.2
+        high_conf = logit_margin > conf_threshold
+        
+        # Greedy where confident, sample where uncertain
+        greedy_samples = logits.argmax(dim=-1)
+        
+        p_x0 = logits.to(torch.float64).exp()
+        p_x0 = p_x0 / (p_x0.sum(dim=-1, keepdim=True) + 1e-8)
+        sampled = _sample_categorical(p_x0)
+        
+        samples = torch.where(high_conf, greedy_samples, sampled)
+        
+    else:
+        raise ValueError(f"Unknown sampling_mode: {sampling_mode}. Choose from ['bd3lm', 'hdp', 'hdp_oracle']")
     
     # =================================================================
-    # 🥇 CRITICAL: HDP Structure Enforcement (Final step)
+    # 🥇 CRITICAL: HDP Structure Enforcement (hdp and hdp_oracle only)
     # =================================================================
-    if self.use_hdp_attention and self.hdp_block_sizes is not None:
+    if sampling_mode in ['hdp', 'hdp_oracle'] and self.use_hdp_attention and self.hdp_block_sizes is not None:
         q_len, p_len, e_len = self.hdp_block_sizes
         
         # 1. FREEZE Question block
