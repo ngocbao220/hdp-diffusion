@@ -7,7 +7,7 @@ set -e
 echo "=========================================="
 echo "🧪 BASELINE OVERFIT TEST (1 Sample)"
 echo "=========================================="
-echo "📊 Data: gsm8k_baseline_overfit.json (1 sample)"
+echo "📊 Data: gsm8k_baseline.json (1 sample)"
 echo "🎯 Goal: Loss → 0, Accuracy → 100%"
 echo "🔥 Training 1000 steps"
 echo "⚙️  Semi-AR sampler, batch_size=1"
@@ -16,7 +16,7 @@ echo "=========================================="
 python main.py \
     mode=train \
     model=tiny \
-    data=gsm8k_baseline_overfit \
+    data=gsm8k_baseline \
     model.length=512 \
     algo=bd3lm \
     algo.backbone=dit \
@@ -30,7 +30,7 @@ python main.py \
     trainer.accumulate_grad_batches=1 \
     trainer.log_every_n_steps=10 \
     trainer.val_check_interval=100 \
-    project_name=baseline_overfit_test \
+    +project_name=baseline_overfit_test \
     experiment_name=gsm8k_1sample \
     wandb.mode=disabled
 
