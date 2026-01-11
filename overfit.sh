@@ -103,7 +103,7 @@ python -u main.py \
     loader.eval_global_batch_size=256 \
     loader.batch_size=${BATCH_SIZE} \
     loader.eval_batch_size=${EVAL_BATCH_SIZE} \
-    loader.num_workers=16 \
+    loader.num_workers=2 \
     optim.lr=${LR} \
     training.ema=0.9999 \
     training.resample=True \
