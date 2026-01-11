@@ -383,16 +383,19 @@ class DDiTBlock(nn.Module):
     else: x = self.norm1(x)
 
     # get qkvs
-    if mask is not None and not sample_mode:
-        # Training with cross-attention:  split [xt | x0]
+    if mask is not None and not sample_mode and x.shape[1] > self.n:
+        # Training with TRUE cross-attention: split [xt | x0]
         qkv_x = self.get_qkv(x[:, :self.n], rotary_cos_sin)
-        qkv_x0 = self. get_qkv(x[: , self.n:], rotary_cos_sin)
+        qkv_x0 = self.get_qkv(x[:, self.n:], rotary_cos_sin)
         qkv = torch.cat((qkv_x, qkv_x0), dim=1)
+    
     elif sample_mode and mask is not None: 
-        # ✅ NEW: Sampling with HDP mask - treat as single sequence
-        qkv = self. get_qkv(x, rotary_cos_sin, store_kv=store_kv)
+        # Sampling with HDP mask
+        qkv = self.get_qkv(x, rotary_cos_sin, store_kv=store_kv)
+        
     else:
-        # Standard (no mask or inference without cross-attn)
+        # Standard OR HDP Training without cross-attn (Input = 512, self.n = 512)
+        # Nó sẽ chạy vào đây, tính qkv cho toàn bộ chuỗi 512 token
         qkv = self.get_qkv(x, rotary_cos_sin, store_kv=store_kv)
       
     # attention
