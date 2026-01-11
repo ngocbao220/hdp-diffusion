@@ -458,8 +458,16 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
   def __init__(self, config, vocab_size: int):
     super().__init__()
     if type(config) == dict: config = omegaconf.OmegaConf.create(config)
+    target_length = getattr(config, 'max_length', None)
+    if target_length is None:
+        target_length = config.model.length
+    self.n = target_length
+
+    config.model.length = self.n 
+    print(f"🔥 DIT updated sequence length to: {self.n}")
+
     self.causal = getattr(config.model, 'causal_attention', config.algo.parameterization == 'ar')
-    self.n = config.model.length
+    # self.n = config.model.length
     self.adaLN = not self.causal or getattr(config.model, 'adaln', False)
     self.config = config
     self.vocab_size = vocab_size
