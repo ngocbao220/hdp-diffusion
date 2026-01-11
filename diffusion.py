@@ -188,9 +188,6 @@ class Diffusion(L.LightningModule):
     print(f"   Using vocab_size: {self.vocab_size}")
     
     if self.config.algo.backbone == 'dit':
-        if hasattr(self.config.data, 'max_length'):
-          print(f"⚠️ Overriding config.model.length ({self.config.model.length}) -> {self.config.data.max_length}")
-          self.config.model.length = self.config.data.max_length
         self.backbone = models.dit.DIT(
             self.config, 
             vocab_size=self.vocab_size  # ✅ Correct size from start
