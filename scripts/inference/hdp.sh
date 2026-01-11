@@ -89,7 +89,7 @@ python -u main.py \
     data.hdp.causal_within_block=${CAUSAL_WITHIN_BLOCK} \
     data.hdp.question_len=${QUESTION_LEN} \
     data.hdp.plan_len=${PLAN_LEN} \
-    data.hdp.exec_len=${EXEC_LEN} \
+    data.hdp.execution_len=${EXEC_LEN} \
     eval.checkpoint_path=${CHECKPOINT_PATH} \
     eval.disable_ema=${USE_EMA} \
     loader.eval_batch_size=${BATCH_SIZE} \

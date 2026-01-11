@@ -2454,6 +2454,7 @@ class Diffusion(L.LightningModule):
           print(f"   ⚠️  Stop condition met, returning None")
           return None
       
+      print("RAW Sample", x)
       return x
 
   @torch.no_grad
