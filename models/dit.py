@@ -545,35 +545,37 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     if sigma is None: t_cond = None
     else: t_cond = F.silu(self.sigma_map(sigma))
 
-    # ✅ FIX: Set self.n BEFORE mask logic
-    if hasattr(self, 'block_diff_mask') or hdp_mask is not None: 
-        # For cross-attention, x is [xt | x0], so n = len(xt)
-        self.n = indices.shape[1] // 2 if not sample_mode else indices.shape[1]
-    else:
-        self.n = indices.shape[1]
+    # --- ĐOẠN CODE SỬA LỖI (FIX LOGIC RỐI) ---
+    # Kiểm tra config xem có đang bật cross_attn thật không
+    config_cross_attn = getattr(self.config.algo, 'cross_attn', False)
 
-    if sample_mode and hdp_mask is not None and not hasattr(self, '_dit_debug_printed'):
-        self._dit_debug_printed = True
-    #     print(f"\n🔍 DiT Backbone receiving HDP mask:")
-    #     print(f"   hdp_mask.shape: {hdp_mask.shape}")
-    #     print(f"   hdp_mask device: {hdp_mask.device}")
-    #     print(f"   Masked positions: {(hdp_mask == float('-inf')).sum()}")
-        
     if hdp_mask is not None:
-      cross_attn = True
       mask = hdp_mask
-      # FIX: In sampling mode, x is single sequence, not [xt | x0] concatenated
+      
+      # LOGIC MỚI: Chỉ chia đôi (slice) nếu thực sự đang dùng Cross-Attn concatenation
       if sample_mode:
+        # Inference: Luôn dùng full sequence
+        self.n = x.shape[1]
+        rotary_cos_sin = self.rotary_emb(x)
+      elif not config_cross_attn:
+        # Training HDP (Self-Attn): Input là [xt] (512) -> KHÔNG ĐƯỢC CHIA ĐÔI
         self.n = x.shape[1]
         rotary_cos_sin = self.rotary_emb(x)
       else:
-        # Training mode: x is [xt | x0] concatenated
+        # Training HDP (Cross-Attn cũ): Input là [xt, x0] (1024) -> Chia đôi lấy xt
         self.n = x.shape[1] // 2
         rotary_cos_sin = self.rotary_emb(x[:, :self.n])
+        
+      # Lưu ý: Biến cross_attn cục bộ này chỉ để quyết định việc crop output cuối cùng
+      cross_attn = True 
+
     else:
+      # Logic cũ (Non-HDP)
       cross_attn = hasattr(self, 'block_diff_mask')
       if cross_attn:
         mask = self.block_diff_mask
+        self.n = x.shape[1] // 2 if not sample_mode else x.shape[1]
+        
         if sample_mode:
           if self.config.sampling.kv_cache:
             mask = None
@@ -586,8 +588,11 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         else:
           rotary_cos_sin = self.rotary_emb(x[:, :self.n])
       else:
+        # Standard Self-Attention (No Mask)
+        self.n = x.shape[1]
         rotary_cos_sin = self.rotary_emb(x)
         mask = None
+    # ------------------------------------------
 
     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
       for i in range(len(self.blocks)):
@@ -596,6 +601,10 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
           sample_mode=sample_mode, mask=mask, store_kv=store_kv)
       x = self.output_layer(x, t_cond)
       
+    # Chỉ crop output nếu thực sự là concatenation (dựa vào shape)
+    # Nếu input vào 512, self.n = 512 -> không cần crop hoặc crop y nguyên
     if cross_attn and not sample_mode:
-      x = x[:, :self.n]
+       if x.shape[1] > self.n: # Chỉ crop nếu output dài hơn n (trường hợp [xt, x0])
+          x = x[:, :self.n]
+          
     return x
