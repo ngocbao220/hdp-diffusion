@@ -62,7 +62,6 @@ MAX_STEPS=500                    # Total training steps
 WARMUP_STEPS=10                  # Warmup steps
 LOG_INTERVAL=10                  # Log every N steps
 # NOTE: Validation disabled for overfit test (causes CUDA crash)
-# Use eval scripts after training: bash scripts/eval_hdp.sh
 LR=1e-4                          # Learning rate (1e-4 stable, 3e-4 faster)
 EMA=0.9999                       # EMA decay rate
 RESAMPLE=True                    # Resample during training
@@ -82,18 +81,8 @@ OUTPUT_DIR="outputs/hdp_overfit_test"
 mkdir -p ${OUTPUT_DIR}
 
 echo "HDP overfit test:"
-echo "  Dataset: ${DATA_CONFIG} (1 sample)"
-echo "  Goal: Verify model can memorize 1 example"
-echo "  Hierarchical Structure:"
-echo "    Question: ${QUESTION_LEN} tokens"
-echo "    Plan: ${PLAN_LEN} tokens"
-echo "    Execution: ${EXEC_LEN} tokens"
-echo "    Total: ${SEQ_LEN} tokens"
-echo "  Diffusion Block Size: ${BLOCK_SIZE}"
 echo "  Batch Size: ${BATCH_SIZE}"
-echo "  Learning Rate: ${LR}"
 echo "  Max Steps: ${MAX_STEPS}"
-echo "  Expected: Loss should drop to near 0"
 echo "  Output: ${OUTPUT_DIR}"
 echo "=========================================="
 
@@ -142,7 +131,10 @@ CUDA_LAUNCH_BLOCKING=1 TORCH_USE_CUDA_DSA=1 python -u main.py \
     wandb.project=hdp-diffusion-experiments \
     wandb.tags=[hdp,gsm8k,${SAMPLER},bs${BLOCK_SIZE}] \
     +experiment_name=${EXP_NAME} \
-    checkpointing.save_dir=${OUTPUT_DIR}
+    checkpointing.save_dir=${OUTPUT_DIR} \
+    +checkpointing.save_last=true \
+    +checkpointing.every_n_train_steps=100 \
+    +checkpointing.monitor=null
 
 EXIT_CODE=$?
 
