@@ -95,6 +95,7 @@ class Diffusion(L.LightningModule):
         
         # Define special tokens
         special_tokens_map = {
+            'question': '<|question|>',
             'plan': '<|plan|>',
             'execution': '<|execution|>',
             'answer': '<|answer|>'
@@ -121,11 +122,13 @@ class Diffusion(L.LightningModule):
             print(f"\n✅ All special tokens already in vocabulary")
         
         # Get token IDs (now guaranteed to exist)
+        self.question_token_id = self.tokenizer.convert_tokens_to_ids('<|question|>') # <-- Thêm dòng này (nếu cần dùng sau này)
         self.plan_token_id = self.tokenizer.convert_tokens_to_ids('<|plan|>')
         self.exec_token_id = self.tokenizer.convert_tokens_to_ids('<|execution|>')
         self.answer_token_id = self.tokenizer.convert_tokens_to_ids('<|answer|>')
         
         print(f"\n📍 Special Token IDs:")
+        print(f"   <|question|>      → {self.question_token_id}")
         print(f"   <|plan|>      → {self.plan_token_id}")
         print(f"   <|execution|> → {self.exec_token_id}")
         print(f"   <|answer|>    → {self.answer_token_id}")
