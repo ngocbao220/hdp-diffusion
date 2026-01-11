@@ -51,14 +51,15 @@ SEQ_LEN=$((QUESTION_LEN + PLAN_LEN + EXEC_LEN))  # 512
 # Block diffusion settings
 BLOCK_SIZE=4  # Can try 4, 8, 16
 
-# H200 Settings (optimized for OVERFITTING TEST)
+# Training Hyperparameters
 BATCH_SIZE=1         # Small batch for overfitting
 EVAL_BATCH_SIZE=1    
+VAL_EVERY_N_EPOCH=10      # Validate every 10 epochs
 GLOBAL_BATCH_SIZE=1  # No gradient accumulation needed
 GRAD_ACCUM=1         
 
 # Training Hyperparameters
-MAX_STEPS=500                    # Total training steps
+MAX_STEPS=700                    # Total training steps
 WARMUP_STEPS=10                  # Warmup steps
 LOG_INTERVAL=10                  # Log every N steps
 # NOTE: Validation disabled for overfit test (causes CUDA crash)
@@ -117,7 +118,7 @@ CUDA_LAUNCH_BLOCKING=1 TORCH_USE_CUDA_DSA=1 python -u main.py \
     trainer.max_steps=${MAX_STEPS} \
     trainer.accumulate_grad_batches=${GRAD_ACCUM} \
     trainer.val_check_interval=null \
-    +trainer.check_val_every_n_epoch=999999 \
+    +trainer.check_val_every_n_epoch=${VAL_EVERY_N_EPOCH} \
     trainer.limit_val_batches=0 \
     trainer.num_sanity_val_steps=0 \
     trainer.log_every_n_steps=${LOG_INTERVAL} \
