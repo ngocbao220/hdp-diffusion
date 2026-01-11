@@ -12,6 +12,8 @@ import dataloader
 import diffusion
 import utils
 
+from hdp_dataset import HDPDataset
+
 # Enable Tensor Cores optimization for H200/A100 GPUs
 # Trade-off precision for performance on Ampere+ architectures
 torch.set_float32_matmul_precision('high')  # Options: 'highest', 'high', 'medium'
@@ -43,16 +45,17 @@ def _load_from_checkpoint(config, tokenizer):
   if not tokenizer.pad_token:
     tokenizer.add_special_tokens({'pad_token': '<|pad|>'})
   
-  special_tokens_dict = {'additional_special_tokens': ['<|plan|>', '<|execution|>', '<|answer|>']}
+  special_tokens_dict = {'additional_special_tokens': ['<|question|>', '<|plan|>', '<|execution|>', '<|answer|>']}
   num_added = tokenizer.add_special_tokens(special_tokens_dict)
   
   # Store marker IDs for hard position anchoring
   # Need to disable struct mode to add new keys
   import omegaconf
   omegaconf.OmegaConf.set_struct(config, False)
-  config.model.plan_token_id = tokenizer.additional_special_tokens_ids[0]
-  config.model.execution_token_id = tokenizer.additional_special_tokens_ids[1]
-  config.model.answer_token_id = tokenizer.additional_special_tokens_ids[2]
+  config.model.question_token_id = tokenizer.additional_special_tokens_ids[0] # <|question|>
+  config.model.plan_token_id = tokenizer.additional_special_tokens_ids[1]     # <|plan|>
+  config.model.execution_token_id = tokenizer.additional_special_tokens_ids[2] # <|execution|>
+  config.model.answer_token_id = tokenizer.additional_special_tokens_ids[3]    # <|answer|>
   omegaconf.OmegaConf.set_struct(config, True)
   
   print(f"\n🔧 Added {num_added} special tokens to tokenizer")
@@ -119,89 +122,131 @@ def _print_batch(train_ds, valid_ds, tokenizer, k=64):
     print('ids:', last)
 
 def generate_samples(config, logger, tokenizer):
-    logger.info('Generating samples.')
+    """
+    Generate samples using the trained model.
+    Now uses HDPDataset to ensure consistency between training and inference data formatting.
+    """
+    logger.info('Generating samples...')
+    
+    # 1. Load Model
     model = _load_from_checkpoint(config=config, tokenizer=tokenizer)
 
-    if config.eval. disable_ema:
+    if config.eval.disable_ema:
         logger.info('Disabling EMA.')
-        model. ema = None
+        model.ema = None
 
-    # Check if HDP mode with test questions
+    # 2. Prepare Question Tokens (Conditioning)
     question_tokens = None
+    
+    # Check if HDP mode is enabled in config
     if hasattr(config.data, 'hdp') and config.data.hdp.get('use_hdp_attention', False):
-        logger.info('HDP mode enabled - loading test questions')
+        logger.info('HDP mode enabled - Loading test data via HDPDataset for consistency')
 
-        # Determine test data path
+        # Determine test path
         test_path = None
         if hasattr(config.data, 'test_path') and config.data.test_path:
             test_path = config.data.test_path
         elif config.data.valid == 'gsm8k':
-            # Use overfit data for testing
-            test_path = 'data/gsm8k/gsm8k_overfit.json'
+            test_path = 'data/gsm8k/test.json' # Default fallback
         
-        if test_path:
-            import json
+        if test_path and os.path.exists(test_path):
             try:
-                with open(test_path, 'r') as f:
-                    test_data = json.load(f)
-
-                # Get first few questions for sampling
-                num_samples = config.sampling.num_sample_batches * config.loader.eval_batch_size
-                questions = [sample['question'] for sample in test_data[:num_samples]]
-
-                # Tokenize questions
+                # Get block sizes from config
                 q_len = config.data.hdp.question_len
+                p_len = config.data.hdp.plan_len
+                e_len = config.data.hdp.execution_len
                 
-                # ✅ CRITICAL: NO BOS/EOS! Training uses add_special_tokens=False
-                # Training format: "Janet's ducks..." (raw text only)
-                # OLD (wrong): "<|endoftext|>Janet's ducks...<|endoftext|>"
-                # NEW (correct): "Janet's ducks..." (match training exactly!)
-                
-                question_tokens = tokenizer(
-                    questions,
-                    return_tensors='pt',
-                    padding='max_length',
-                    truncation=True,
-                    max_length=q_len,
-                    add_special_tokens=False  # ✅ Match training!
-                )['input_ids'].to('cuda')
+                # Initialize Dataset
+                # IMPORTANT: This ensures <|question|> tag and padding are handled exactly like training
+                eval_dataset = HDPDataset(
+                    data_path=test_path,
+                    tokenizer=tokenizer,
+                    block_sizes=(q_len, p_len, e_len),
+                    use_special_format=True, 
+                    return_block_indices=True
+                )
 
-                logger.info(f'✅ Loaded {len(questions)} test questions for conditional generation')
-                logger.info(f'   Question length: {q_len} tokens')
+                # Determine how many samples to generate
+                num_samples = config.sampling.num_sample_batches * config.loader.eval_batch_size
+                num_samples = min(num_samples, len(eval_dataset))
+                
+                logger.info(f"Extracting questions from first {num_samples} samples in dataset...")
+                
+                batch_q_ids = []
+                for i in range(num_samples):
+                    sample = eval_dataset[i]
+                    
+                    # sample['input_ids'] contains [Question | Plan | Execution]
+                    # We only need the Question part for the conditional input
+                    full_seq = sample['input_ids']
+                    
+                    # Logic 1: Slice by length (Fastest & Safest for fixed block sizes)
+                    q_ids = full_seq[:q_len]
+                    
+                    # Logic 2 (Alternative): Slice by block_indices if available (More robust)
+                    # if 'block_indices' in sample:
+                    #     q_ids = full_seq[sample['block_indices'] == 0]
+                    
+                    batch_q_ids.append(q_ids)
+                
+                if batch_q_ids:
+                    question_tokens = torch.stack(batch_q_ids).to('cuda')
+                    logger.info(f'✅ Loaded {len(question_tokens)} questions. Shape: {question_tokens.shape}')
+                
             except Exception as e:
-                logger.warning(f'Could not load test questions: {e}')
-                logger.warning('Falling back to unconditional generation')
+                logger.error(f'Error utilizing HDPDataset for inference: {e}')
+                logger.warning('Falling back to unconditional generation (or ensure test.json has required keys)')
+                import traceback
+                traceback.print_exc()
         else:
-            logger.warning('No test data path configured - unconditional generation')
+            logger.warning(f'Test path not found: {test_path}. Performing unconditional generation.')
 
-    # Generate samples
-    # 🔧 FIX: Pass seqlen explicitly for semi-AR sampler
-    # Semi-AR generates block-by-block and needs to know total sequence length
+    # 3. Generate Samples
+    # Pass seqlen explicitly for semi-AR sampler or correct diffusion length
+    seq_len = config.model.length
+    
+    logger.info(f"Starting sampling loop (Steps={config.sampling.get('num_steps', config.algo.T)})...")
     text_samples = model.restore_model_and_sample(
         num_steps=config.sampling.get('num_steps', config.algo.T),
-        seqlen=config.model.length,  # ✅ CRITICAL: Pass seqlen=512 for semi-AR
+        seqlen=seq_len, 
         question_tokens=question_tokens
     )
 
+    # 4. Metrics & Logging
     print('Text samples:', text_samples)
-    print('Generative perplexity:', model.metrics. gen_ppl. compute())
-    print('Entropy:', model.metrics. gen_entropy.compute())
+    
+    # Calculate metrics if available
+    try:
+        gen_ppl = model.metrics.gen_ppl.compute()
+        print('Generative perplexity:', gen_ppl)
+        gen_entropy = model.metrics.gen_entropy.compute()
+        print('Entropy:', gen_entropy)
+    except Exception:
+        print("Metrics computation skipped (not enough data or metric error).")
 
-    csv_path = config. sampling.logdir
+    # 5. Save to CSV
+    csv_path = config.sampling.logdir
+    
+    # Ensure directory exists
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    
     save_dict = {
         'gen_ppl': model.metrics.gen_ppls,
-        'gen_nfes': model. metrics.gen_nfes,
-        'gen_entropy': model.metrics. gen_entropies,
-        'gen_lengths': model.metrics. gen_lengths,
+        'gen_nfes': model.metrics.gen_nfes,
+        'gen_entropy': model.metrics.gen_entropies,
+        'gen_lengths': model.metrics.gen_lengths,
         'samples': [[i] for i in text_samples],
         'seed': [config.seed for _ in range(len(text_samples))]
     }
 
     if config.sampling.var_length:
-        print(text_samples)
-        save_dict['samples'] = ['' for _ in range(len(text_samples))]
+        # If variable length, we might want to store raw strings differently
+        # But keeping structure consistent
+        pass
 
     utils.update_and_save_csv(save_dict, csv_path)
+    logger.info(f"Samples saved to {csv_path}")
+    
     return text_samples
 
 def _display_hdp_samples(samples, validation_data, tokenizer):

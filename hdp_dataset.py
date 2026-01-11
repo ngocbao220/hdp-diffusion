@@ -145,6 +145,7 @@ class HDPDataset(Dataset):
         # Build text based on format
         if self.use_special_format:
             # Format: <|plan|> plan_text <|execution|> execution_text <|answer|> answer
+            question_text = f"<|question|> {sample['question']}"
             plan_text = f"<|plan|> {sample['plan']}"
             execution_text = f"<|execution|> {sample['execution']}"
             answer = sample.get('answer', '')
@@ -157,7 +158,7 @@ class HDPDataset(Dataset):
         
         # Tokenize each block separately
         question_ids = self._tokenize_and_pad(
-            sample['question'], 
+            question_text, 
             self.q_len, 
             padding_side='right'
         )
@@ -200,90 +201,6 @@ class HDPDataset(Dataset):
         return result
 
 
-class HDPDatasetSimple(Dataset):
-    """
-    Simplified HDP Dataset for baseline experiments.
-    
-    Automatically splits a single text into Question + Solution format,
-    then further splits Solution into Plan + Execution based on heuristics.
-    """
-    
-    def __init__(
-        self,
-        data_path: str,
-        tokenizer: PreTrainedTokenizer,
-        block_sizes: Tuple[int, int, int] = (128, 128, 256),
-        question_key: str = 'question',
-        answer_key: str = 'answer'
-    ):
-        """
-        Args:
-            data_path: Path to JSON with question/answer pairs
-            tokenizer: Tokenizer
-            block_sizes: Block sizes
-            question_key: Key for question in JSON
-            answer_key: Key for answer in JSON
-        """
-        self.data_path = data_path
-        self.tokenizer = tokenizer
-        self.block_sizes = block_sizes
-        self.question_key = question_key
-        self.answer_key = answer_key
-        
-        self.q_len, self.p_len, self.e_len = block_sizes
-        
-        # Load data
-        with open(data_path, 'r') as f:
-            self.data = json.load(f)
-        
-        logger.info(f"Loaded {len(self.data)} samples from {data_path}")
-    
-    def _split_answer_to_plan_exec(self, answer: str) -> Tuple[str, str]:
-        """
-        Heuristically split answer into plan and execution.
-        
-        This is a simple baseline - in practice you'd want better splitting logic.
-        """
-        # Simple heuristic: first 30% is plan, rest is execution
-        sentences = answer.split('.')
-        split_point = max(1, len(sentences) // 3)
-        
-        plan = '. '.join(sentences[:split_point]) + '.'
-        execution = '. '.join(sentences[split_point:])
-        
-        return plan, execution
-    
-    def __len__(self) -> int:
-        return len(self.data)
-    
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        sample = self.data[idx]
-        
-        question = sample[self.question_key]
-        answer = sample[self.answer_key]
-        
-        # Split answer into plan and execution
-        plan, execution = self._split_answer_to_plan_exec(answer)
-        
-        # Tokenize
-        dataset = HDPDataset.__new__(HDPDataset)
-        dataset.tokenizer = self.tokenizer
-        dataset.block_sizes = self.block_sizes
-        dataset.q_len, dataset.p_len, dataset.e_len = self.block_sizes
-        dataset.return_block_indices = True
-        
-        # Create temp sample
-        temp_sample = {
-            'question': question,
-            'plan': plan,
-            'execution': execution
-        }
-        
-        # Use parent class tokenization
-        dataset.data = [temp_sample]
-        return dataset.__getitem__(0)
-
-
 def collate_hdp_batch(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     """
     Collate function for DataLoader.
@@ -301,102 +218,6 @@ def collate_hdp_batch(batch: List[Dict]) -> Dict[str, torch.Tensor]:
         batched[key] = torch.stack([sample[key] for sample in batch])
     
     return batched
-
-if __name__ == "__main__":
-    import os
-    from transformers import AutoTokenizer, GPT2Tokenizer
-    from torch.utils.data import DataLoader
-    
-    # --- CẤU HÌNH ---
-    # Thay đường dẫn này bằng đường dẫn tới file thật của bạn
-    REAL_DATA_PATH = 'data/gsm8k/gsm8k_hierarchical_train.json'
-    
-    print(f"Testing HDP Dataset with real data at: {REAL_DATA_PATH}")
-    
-    # 1. Kiểm tra file
-    if not os.path.exists(REAL_DATA_PATH):
-        print(f"\n❌ ERROR: File not found at {REAL_DATA_PATH}")
-        exit(1)
-
-    # 2. Load Tokenizer
-    print("Loading tokenizer...")
-    try:
-        tokenizer = AutoTokenizer.from_pretrained('gpt2') 
-        tokenizer.pad_token = tokenizer.eos_token
-    except:
-        tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-        tokenizer.pad_token = tokenizer.eos_token
-
-    # 3. Load Dataset
-    print("\nAttempting to load HDPDataset...")
-    try:
-        # Thử load dataset chuẩn
-        dataset = HDPDataset(
-            data_path=REAL_DATA_PATH,
-            tokenizer=tokenizer,
-            block_sizes=(128, 128, 256) # Q=128, P=128, E=256
-        )
-    except ValueError:
-        print("⚠️  Standard load failed (missing keys), trying Simple/Fallback mode...")
-        # Fallback nếu file json chưa chia sẵn plan/execution
-        dataset = HDPDatasetSimple(
-            data_path=REAL_DATA_PATH,
-            tokenizer=tokenizer,
-            block_sizes=(128, 128, 256)
-        )
-
-    # 4. HÀM KIỂM TRA DECODE CHI TIẾT
-    def debug_print_sample(sample_idx, dataset, tokenizer):
-        sample = dataset[sample_idx]
-        
-        input_ids = sample['input_ids']
-        block_indices = sample['block_indices']
-        
-        # Tách các token dựa trên block_indices
-        # 0: Question, 1: Plan, 2: Execution
-        q_tokens = input_ids[block_indices == 0]
-        p_tokens = input_ids[block_indices == 1]
-        e_tokens = input_ids[block_indices == 2]
-        
-        # Hàm lọc padding để in cho đẹp
-        pad_id = tokenizer.pad_token_id
-        def decode_clean(tokens):
-            # Lọc bỏ pad token để dễ đọc nội dung
-            valid_tokens = tokens[tokens != pad_id]
-            text = tokenizer.decode(valid_tokens, skip_special_tokens=False)
-            return text if text.strip() else "[EMPTY / PADDING ONLY]"
-
-        print("\n" + "="*60)
-        print(f"🔎 DETAILED STRUCTURE CHECK (Sample #{sample_idx})")
-        
-        print(f"\n[BLOCK 0: QUESTION] (Allocated: {len(q_tokens)} tokens)")
-        print(f"   Shape check: {q_tokens.shape}")
-        print(f"QUESTION TOKENS:", q_tokens[q_tokens != pad_id].tolist())
-        print("QUESTION DECODE:", decode_clean(q_tokens))
-        
-        print(f"\n[BLOCK 1: PLAN] (Allocated: {len(p_tokens)} tokens)")
-        print(f"   Shape check: {p_tokens.shape}")
-        print("PLAN TOKENS:", p_tokens[p_tokens != pad_id].tolist())
-        print("PLAN DECODE:", decode_clean(p_tokens))
-        
-        print(f"\n[BLOCK 2: EXECUTION] (Allocated: {len(e_tokens)} tokens)")
-        print(f"   Shape check: {e_tokens.shape}")
-        print("EXECUTION TOKENS:", e_tokens[e_tokens != pad_id].tolist())
-        print("EXECUTION DECODE:", decode_clean(e_tokens))
-        
-        print("\n" + "="*60 + "\n")
-
-    print(f"Tokenizer size: {len(tokenizer)}")
-    # 5. Thực hiện in kiểm tra mẫu đầu tiên
-    print("Dataset size:", len(dataset))
-    if len(dataset) > 0:
-        debug_print_sample(0, dataset, tokenizer)
-        
-        # Kiểm tra thêm 1 mẫu nữa để chắc chắn (ví dụ mẫu số 1)
-        if len(dataset) > 1:
-            debug_print_sample(2, dataset, tokenizer)
-
-    print("✅ Done verifying format.")
 
 
 class SimpleGSM8KDataset(Dataset):
@@ -457,3 +278,144 @@ class SimpleGSM8KDataset(Dataset):
             'input_ids': encoded['input_ids'].squeeze(0),
             'attention_mask': encoded['attention_mask'].squeeze(0)
         }
+    
+if __name__ == "__main__":
+    import os
+    import tempfile
+    import sys
+    from transformers import AutoTokenizer
+
+    # Cấu hình logging ra màn hình để dễ nhìn
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
+
+    print("\n" + "="*50)
+    print("🛠️  HDP DATASET DIAGNOSTIC TOOL")
+    print("="*50 + "\n")
+
+    # ---------------------------------------------------------
+    # 1. TẠO DỮ LIỆU GIẢ (Dummy Data)
+    # ---------------------------------------------------------
+    # Để test mà không cần file thật bên ngoài
+    dummy_data = [
+        {
+            "question": "John has 5 apples. He buys 3 more. How many apples?",
+            "plan": "Identify initial count. Add bought count.",
+            "execution": "5 + 3 = 8.",
+            "answer": "8"
+        },
+        {
+            "question": "Calculate area of a square with side 4.",
+            "plan": "Use area formula. Substitute side length.",
+            "execution": "Area = side * side = 4 * 4 = 16.",
+            "answer": "16"
+        }
+    ]
+    
+    # Ghi dữ liệu giả vào file tạm
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as tmp_file:
+        json.dump(dummy_data, tmp_file)
+        tmp_path = tmp_file.name
+    
+    logger.info(f"Created temporary dummy dataset at: {tmp_path}")
+
+    try:
+        # ---------------------------------------------------------
+        # 2. KHỞI TẠO TOKENIZER
+        # ---------------------------------------------------------
+        # Sử dụng gpt2 làm ví dụ (nhanh và nhẹ)
+        logger.info("Loading Tokenizer (gpt2)...")
+        tokenizer = AutoTokenizer.from_pretrained('gpt2')
+        # GPT2 không có pad_token mặc định, gán nó là eos_token
+        tokenizer.pad_token = tokenizer.eos_token 
+
+        # ---------------------------------------------------------
+        # 3. KHỞI TẠO DATASET VÀ DATALOADER
+        # ---------------------------------------------------------
+        # Thiết lập block size nhỏ để dễ debug
+        # Q=32, P=32, E=64 -> Tổng seq_len = 128
+        BLOCK_SIZES = (32, 32, 64) 
+        
+        logger.info("Initializing HDPDataset...")
+        dataset = HDPDataset(
+            data_path=tmp_path,
+            tokenizer=tokenizer,
+            block_sizes=BLOCK_SIZES,
+            use_special_format=True,
+            return_block_indices=True
+        )
+
+        dataloader = torch.utils.data.DataLoader(
+            dataset, 
+            batch_size=2, 
+            shuffle=True, 
+            collate_fn=collate_hdp_batch
+        )
+
+        # ---------------------------------------------------------
+        # 4. KIỂM TRA BATCH
+        # ---------------------------------------------------------
+        logger.info("Fetching one batch to inspect...")
+        batch = next(iter(dataloader))
+        
+        input_ids = batch['input_ids']           # Shape: (B, Seq_Len)
+        attn_mask = batch['attention_mask']      # Shape: (B, Seq_Len)
+        block_idxs = batch['block_indices']      # Shape: (B, Seq_Len)
+
+        print("\n--- Tensor Shapes ---")
+        print(f"Batch Size:      {input_ids.shape[0]}")
+        print(f"Sequence Length: {input_ids.shape[1]} (Target: {sum(BLOCK_SIZES)})")
+        print(f"Input IDs:       {input_ids.shape}")
+        print(f"Block Indices:   {block_idxs.shape}")
+
+        # ---------------------------------------------------------
+        # 5. GIẢI MÃ VÀ KIỂM TRA NỘI DUNG (DECODING CHECK)
+        # ---------------------------------------------------------
+        print("\n--- Content Decoding Check (Sample 0) ---")
+        
+        # Lấy sample đầu tiên trong batch
+        sample_ids = input_ids[0]
+        sample_blocks = block_idxs[0]
+        
+        # Tách các phần dựa trên block_indices
+        q_mask = (sample_blocks == 0)
+        p_mask = (sample_blocks == 1)
+        e_mask = (sample_blocks == 2)
+        
+        # Hàm decode bỏ qua padding (eos_token trong trường hợp gpt2)
+        def robust_decode(tokens):
+            # Lọc bỏ pad token để nhìn cho sạch
+            valid_tokens = tokens[tokens != tokenizer.pad_token_id]
+            return tokenizer.decode(valid_tokens, skip_special_tokens=False)
+
+        q_text = robust_decode(sample_ids[q_mask])
+        p_text = robust_decode(sample_ids[p_mask])
+        e_text = robust_decode(sample_ids[e_mask])
+
+        print(f"\n[BLOCK 0 - QUESTION] ({BLOCK_SIZES[0]} tokens reserved)")
+        print(f"Raw Content: \"{q_text}\"")
+        
+        print(f"\n[BLOCK 1 - PLAN] ({BLOCK_SIZES[1]} tokens reserved)")
+        print(f"Raw Content: \"{p_text}\"")
+        
+        print(f"\n[BLOCK 2 - EXECUTION] ({BLOCK_SIZES[2]} tokens reserved)")
+        print(f"Raw Content: \"{e_text}\"")
+
+        print("\n" + "="*50)
+        print("✅ TEST COMPLETED SUCCESSFULLY")
+        print("="*50)
+
+    except Exception as e:
+        logger.error(f"Test Failed: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    finally:
+        # Dọn dẹp file tạm
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+            logger.info("Cleaned up temporary files.")
