@@ -189,7 +189,7 @@ class Diffusion(L.LightningModule):
     
     if self.config.algo.backbone == 'dit':
         if hasattr(self.config.data, 'max_length'):
-          print(f"⚠️ Overriding config.model.length ({self.config.model.length}) -> {self.config.max_length}")
+          print(f"⚠️ Overriding config.model.length ({self.config.model.length}) -> {self.config.data.max_length}")
           self.config.model.length = self.config.data.max_length
         self.backbone = models.dit.DIT(
             self.config, 
