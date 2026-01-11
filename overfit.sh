@@ -96,7 +96,7 @@ python -u main.py \
     model.attn_backend=sdpa \
     algo=bd3lm \
     algo.backbone=dit \
-    +algo.cross_attn=false \
+    ++algo.cross_attn=false \
     block_size=${BLOCK_SIZE} \
     noise=loglinear \
     loader.global_batch_size=${GLOBAL_BATCH_SIZE} \
