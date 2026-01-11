@@ -102,7 +102,6 @@ python -u main.py \
     trainer.precision=bf16-mixed \
     trainer.gradient_clip_val=1.0 \
     +sampling.disable_val_sampling=true \
-    +callbacks.checkpoint_monitor.save_last=true \
     wandb.name=hdp-diffusion-h200-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S) \
     wandb.project=hdp-diffusion-h200 \
     wandb.tags=[hdp,gsm8k,hierarchical,h200,bs${BLOCK_SIZE}] \
@@ -113,25 +112,3 @@ EXIT_CODE=$?
 
 echo "=========================================="
 echo "Training completed with exit code: ${EXIT_CODE}"
-
-if [ ${EXIT_CODE} -eq 0 ]; then
-    echo "✅ HDP-Diffusion training successful!"
-    echo "Checkpoints saved to: ${OUTPUT_DIR}"
-    echo ""
-    echo "Fast Training on H200:"
-    echo "  Batch size 128 with 4x gradient accumulation"
-    echo "  Effective batch size: 512"
-    echo "  Completed 10K steps in ~5 hours"
-    echo ""
-    echo "To evaluate:"
-    echo "python main.py mode=sample_eval \\"
-    echo "    eval.checkpoint_path=${OUTPUT_DIR}/checkpoints/last.ckpt \\"
-    echo "    model=small \\"
-    echo "    algo=bd3lm \\"
-    echo "    data=hdp_diffusion"
-else
-    echo "❌ Training failed!"
-    echo "Check logs: watch_folder/"
-fi
-
-echo "=========================================="
