@@ -126,7 +126,6 @@ def generate_samples(config, logger, tokenizer):
     Generate samples using the trained model.
     Now uses HDPDataset to ensure consistency between training and inference data formatting.
     """
-    logger.info('Generating samples...')
     
     # 1. Load Model
     model = _load_from_checkpoint(config=config, tokenizer=tokenizer)
@@ -192,6 +191,23 @@ def generate_samples(config, logger, tokenizer):
                 if batch_q_ids:
                     question_tokens = torch.stack(batch_q_ids).to('cuda')
                     logger.info(f'✅ Loaded {len(question_tokens)} questions. Shape: {question_tokens.shape}')
+                    # CHÈN VÀO MAIN.PY TRƯỚC KHI SAMPLING
+                    print("\n=== DEBUG DIAGNOSTIC ===")
+                    # 1. Check Tokenizer
+                    print(f"Vocab Size: {len(tokenizer)}")
+                    print(f"Plan Token ID: {tokenizer.convert_tokens_to_ids('<|plan|>')}")
+                    print(f"Question Token ID: {tokenizer.convert_tokens_to_ids('<|question|>')}")
+
+                    # 2. Check Input Data
+                    if question_tokens is not None:
+                        print("\nInput Tensor Shape:", question_tokens.shape)
+                        print("Input Tensor First 10 IDs:", question_tokens[0, :10].tolist())
+                        print("Decoded Input:", tokenizer.decode(question_tokens[0], skip_special_tokens=False))
+                    else:
+                        print("\n❌ CRITICAL: question_tokens is NONE! Model is generating from pure noise!")
+
+                    print("========================\n")
+                    logger.info('Generating samples...')
                 
             except Exception as e:
                 logger.error(f'Error utilizing HDPDataset for inference: {e}')
@@ -204,7 +220,8 @@ def generate_samples(config, logger, tokenizer):
     # 3. Generate Samples
     # Pass seqlen explicitly for semi-AR sampler or correct diffusion length
     seq_len = config.model.length
-    
+    print("DEBUG INFERENCE INPUT:")
+    print(tokenizer.decode(question_tokens[0], skip_special_tokens=False))
     logger.info(f"Starting sampling loop (Steps={config.sampling.get('num_steps', config.algo.T)})...")
     text_samples = model.restore_model_and_sample(
         num_steps=config.sampling.get('num_steps', config.algo.T),

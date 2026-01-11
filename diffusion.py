@@ -2453,8 +2453,7 @@ class Diffusion(L.LightningModule):
       if stop:
           print(f"   ⚠️  Stop condition met, returning None")
           return None
-      
-      print("RAW Sample", self.tokenizer.decode(x))
+    
       return x
 
   @torch.no_grad
